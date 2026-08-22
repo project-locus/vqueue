@@ -422,7 +422,7 @@ void vqueue_post(vqueue_t* q, vqueue_block_t block){
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 		atomic_fetch_add_explicit(&ctx.data->usema4, 1, memory_order_relaxed);
-		syscall(SYS_ulock_wake, 0x1000003, &ctx.data->usema4, 1, 0);
+		syscall(SYS_ulock_wake, 0x1000006, &ctx.data->usema4, 1, 0);
 #else
 		sem_post(&ctx.data->sema4);
 #endif
@@ -442,10 +442,10 @@ vqueue_block_t vqueue_wait(vqueue_t* q){
 		uint64_t ptr = _vqueue_pointer_acquire(&ctx, _vqueue_offsetof(head), &n);
 		if(ptr == _VQUEUE_PTR_INVALID){
 #ifdef _VQUEUE_U_SEMA4
-			uint32_t v = atomic_load_explicit(&ctx.data->usema4, memory_order_relaxed);
+			uint64_t v = atomic_load_explicit(&ctx.data->usema4, memory_order_relaxed);
 			retry_usema4:
 			while(!v){
-				if(syscall(SYS_ulock_wait, 0x1000003 /* UL_COMPARE_AND_WAIT_SHARED */, &ctx.data->usema4, 0, 0) && errno == EINVAL) sched_yield();
+				if(syscall(SYS_ulock_wait, 0x1000006 /* UL_COMPARE_AND_WAIT64_SHARED */, &ctx.data->usema4, 0, 0) && errno == EINVAL) sched_yield();
 				v = atomic_load_explicit(&ctx.data->usema4, memory_order_relaxed);
 			}
 			if(!atomic_compare_exchange_strong_explicit(&ctx.data->usema4, &v, v-1, memory_order_acquire, memory_order_relaxed)) goto retry_usema4;

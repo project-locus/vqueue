@@ -31,7 +31,7 @@ struct _vqueue_msg_hdr{
 struct _vqueue_shmem_region{
 #ifdef __APPLE__
 	#define _VQUEUE_U_SEMA4
-	_Atomic uint32_t usema4;
+	_Atomic uint64_t usema4;
 #else
 	sem_t sema4;
 #endif
