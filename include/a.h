@@ -327,13 +327,6 @@ static inline void thread_detach(thread_t t);
 // When this function is called from a thread that was not created by `thread_create` (e.g. the main thread or a thread created by another library), it will compare `!=` to all valid thread handles returned by `thread_create`, and `!=` to `(thread_t)0`, but is otherwise unspecified (e.g. it may return a unique value for each thread, or the same value for all threads).
 static inline thread_t thread_self(void);
 
-// Get a wait token used by `thread_wait` and `thread_wake`
-static inline wait_t thread_wait_token(void);
-// Pause execution of the current thread until any thread calls `thread_wake()` on the same token. The token passed to this function must have been obtained by `thread_wait_token()` on the same thread. If `thread_wake()` is called before this function is called, then it will return immediately.
-static inline void thread_wait(wait_t token);
-// Resume the execution of another thread from a wait token (see `thread_wait()`). The token passed to this function must have been obtained by `thread_wait_token()` on the thread to resume. Calling `thread_wake()` multiple times for one wait token is undefined behavior.
-static inline void thread_wake(wait_t token);
-
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -345,7 +338,6 @@ static inline void thread_wake(wait_t token);
 #undef far
 #undef pascal
 #undef cdecl
-
 
 typedef SSIZE_T ssize_t;
 
@@ -384,7 +376,6 @@ struct _thread_t{
 static inline size_t available_concurrency(void){ DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS); return n <= 0 ? 1 : n; }
 
 _atomic_weaklink _Thread_local thread_t _a_thread_self = (thread_t)-1;
-_atomic_weaklink _Thread_local _Atomic uint8_t _a_park_flag = 0;
 
 static inline DWORD WINAPI _thread_wrapper(void* a_){
 	struct _thread_t* a = _a_thread_self = (struct _thread_t*)a_;
@@ -436,17 +427,6 @@ static inline void thread_sleep(uint64_t useconds){
 		Sleep(_SLEEP_MAX);
 	}
 	Sleep((DWORD) useconds);
-}
-
-static inline wait_t thread_wait_token(void){ return (uintptr_t)&_a_park_flag; }
-static inline void thread_wait(wait_t v){
-	uint8_t zero = 0;
-	WaitOnAddress((uint8_t*)v, &zero, 1, INFINITE);
-	atomic_store_explicit((_Atomic uint8_t*)v, 0, memory_order_release);
-}
-static inline void thread_wake(wait_t v){
-	atomic_store_explicit((_Atomic uint8_t*)v, 1, memory_order_release);
-	WakeByAddressSingle((uint8_t*)v);
 }
 
 static inline uint64_t mono_now(void){
@@ -730,36 +710,6 @@ static inline void thread_sleep(uint64_t useconds){
 #endif
 }
 
-#if defined(__NetBSD__) || defined(__sun)
-
-	static inline wait_t thread_wait_token(void){ return _lwp_self(); }
-	static inline void thread_wait(wait_t token){
-		// Useless arguments
-	#ifdef __sun
-		_lwp_park(0, 0, 0, 0);
-	#else
-		_lwp_park(0, 0, 0, 0, 0, 0);
-	#endif
-	}
-	static inline void thread_wake(wait_t token){ _lwp_unpark(token, 0); }
-
-#else
-
-	_atomic_weaklink _Thread_local _Atomic uint32_t _a_park_flag = 0;
-	static inline wait_t thread_wait_token(void){
-		return (uintptr_t)&_a_park_flag;
-	}
-	static inline void thread_wait(wait_t v){
-		_atomic_futex32((uint32_t*)v, 0);
-		atomic_store_explicit((_Atomic uint32_t*)v, 0, memory_order_release);
-	}
-	static inline void thread_wake(wait_t v){
-		atomic_store_explicit((_Atomic uint32_t*)v, 1, memory_order_release);
-		_atomic_wake32((uint32_t*)v, 1);
-	}
-
-#endif
-
 static inline uint64_t mono_now(void){
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -892,21 +842,21 @@ static inline void lock_wait_explicit(lock_t* lock, int32_t n, memory_order orde
 // Wait for `n` slots to become available on a `lock_t`. If those slots are not available, the function will wait until corresponding `lock_release` has released them. Nothing is acquired. Once those slots are available, they will stay available for other operations to potentially acquire. This function implies acquire memory ordering (see `lock_wait_explicit`)
 static inline void lock_wait(lock_t* lock, int32_t n){ lock_wait_explicit(lock, n, memory_order_acquire); }
 
-// Overload for `lock_try_test_and_acquire` with a memory order that must be one of `memory_order_relaxed`, `memory_order_acquire` or `memory_order_seq_cst`. The memory ordering only applies if the function succeeds (returns true)
-static inline bool lock_test_and_acquire_explicit(lock_t* lock, int32_t test_n, int32_t n, memory_order order){
-	uint32_t v = atomic_load_explicit(lock, memory_order_relaxed);
+// Overload for `lock_try_test_and_acquire` with a success and failure memory order that each must be one of `memory_order_relaxed`, `memory_order_acquire` or `memory_order_seq_cst`.
+static inline bool lock_test_and_acquire_explicit(lock_t* lock, int32_t test_n, int32_t n, memory_order success, memory_order failure){
+	uint32_t v = atomic_load_explicit(lock, failure);
 	loop: {}
 	int32_t v2 = (int32_t)(v&0x7FFFFFFF);
 	if(v2 < test_n) return false;
-	if(atomic_compare_exchange_weak_explicit(lock, &v, (uint32_t)(v2-n)|(v&0x80000000), order, memory_order_relaxed)) return true; // acquired
+	if(atomic_compare_exchange_weak_explicit(lock, &v, (uint32_t)(v2-n)|(v&0x80000000), success, failure)) return true; // acquired
 	goto loop;
 }
 // Try to acquire `n` slots from a `lock_t`, iff the number of available slots is at least `test_n`. If those slots are not available, the function will return false instead of waiting. This function implies acquire memory ordering if it succeeds (see `lock_try_acquire_explicit`)
-static inline bool lock_test_and_acquire(lock_t* lock, int32_t test_n, int32_t n){ return lock_test_and_acquire_explicit(lock, test_n, n, memory_order_acquire); }
-// Overload for `lock_try_acquire` with a memory order that must be one of `memory_order_relaxed`, `memory_order_acquire` or `memory_order_seq_cst`. The memory ordering only applies if the function succeeds (returns true)
-static inline bool lock_try_acquire_explicit(lock_t* lock, int32_t n, memory_order order){ return lock_test_and_acquire_explicit(lock, n, n, order); }
+static inline bool lock_test_and_acquire(lock_t* lock, int32_t test_n, int32_t n){ return lock_test_and_acquire_explicit(lock, test_n, n, memory_order_acquire, memory_order_relaxed); }
+// Overload for `lock_try_acquire` with a success and failure memory order that each must be one of `memory_order_relaxed`, `memory_order_acquire` or `memory_order_seq_cst`.
+static inline bool lock_try_acquire_explicit(lock_t* lock, int32_t n, memory_order success, memory_order failure){ return lock_test_and_acquire_explicit(lock, n, n, success, failure); }
 // Try to acquire `n` slots from a `lock_t`. If those slots are not available, the function will return false instead of waiting. This function implies acquire memory ordering if it succeeds (see `lock_try_acquire_explicit`)
-static inline bool lock_try_acquire(lock_t* lock, int32_t n){ return lock_test_and_acquire_explicit(lock, n, n, memory_order_acquire); }
+static inline bool lock_try_acquire(lock_t* lock, int32_t n){ return lock_test_and_acquire_explicit(lock, n, n, memory_order_acquire, memory_order_relaxed); }
 
 // Overload for `lock_release` with a memory order that must be one of `memory_order_relaxed`, `memory_order_release` or `memory_order_seq_cst`
 static inline void lock_release_explicit(lock_t* lock, int32_t n, memory_order order){
@@ -919,6 +869,25 @@ static inline void lock_release_explicit(lock_t* lock, int32_t n, memory_order o
 }
 // Release `n` slots from a `lock_t`. Any threads waiting on another operation on this lock will have a chance to continue (i.e progress / return). The order of which threads progress first is not guaranteed but older waiters will typically progress sooner. This function implies release memory ordering (see `lock_release_explicit`)
 static inline void lock_release(lock_t* lock, int32_t n){ lock_release_explicit(lock, n, memory_order_release); }
+
+// Overload for `lock_saturating_release` with any memory order
+static inline uint32_t lock_saturating_release_explicit(lock_t* lock, int32_t n, int32_t max_n, memory_order order){
+	uint32_t v = atomic_load_explicit(lock, memory_order_relaxed);
+	retry:
+	bool wake = v&0x80000000; v &= 0x7fffffff;
+	uint32_t nv = v+n;
+	if(nv > (uint32_t)max_n) nv = max_n;
+	if(!atomic_compare_exchange_weak_explicit(lock, &v, nv, order, memory_order_relaxed)) goto retry;
+	n = nv-v;
+	if(wake){
+		atomic_fetch_and_explicit(lock, 0x7FFFFFFF, memory_order_relaxed);
+		// We need to wake at least this many waiters. By waking one more waiter we guarantee that the waiting flag is set again if there are indeed more waiters
+		_atomic_wake32(lock, (int)n+(n<0x7FFFFFFF));
+	}
+	return v+n; // nv before saturation
+}
+// Release `n` slots from a `lock_t`, but clamping the number of available slots to at most `max_n`. Returns the number of slots that would have been available after incrementing but before clamping (hence, if the return value > `max_n`, saturation happened). Any threads waiting on another operation on this lock will have a chance to continue (i.e progress / return). The order of which threads progress first is not guaranteed but older waiters will typically progress sooner. This function implies release memory ordering (see `lock_saturating_release_explicit`)
+static inline uint32_t lock_saturating_release(lock_t* lock, int32_t n, int32_t max_n){ return lock_saturating_release_explicit(lock, n, max_n, memory_order_release); }
 
 // Overload for `lock_fetch` with a memory order that must be one of `memory_order_relaxed`, `memory_order_acquire` or `memory_order_seq_cst`
 static inline uint32_t lock_fetch_explicit(lock_t* lock, memory_order order){ return atomic_load_explicit(lock, order)&0x7FFFFFFF; }
@@ -938,6 +907,22 @@ static inline uint32_t lock_reset_explicit(lock_t* lock, int32_t n, memory_order
 }
 // Set how many locks are available on a `lock_t`, returning the previous number of available slots. This function implies acquire & release memory ordering (see `lock_reset_explicit`)
 static inline uint32_t lock_reset(lock_t* lock, int32_t n){ return lock_reset_explicit(lock, n, memory_order_acq_rel); }
+
+// Overload for `lock_test_and_reset` with any memory order for success, and any of `memory_order_relaxed`, `memory_order_acquire` or `memory_order_seq_cst` for failure
+static inline uint32_t lock_test_and_reset_explicit(lock_t* lock, int32_t test_n, int32_t n, memory_order success, memory_order failure){
+	uint32_t v = atomic_load_explicit(lock, failure);
+	retry:
+	if((v&0x7fffffff)!=(uint32_t)test_n) return v&0x7fffffff;
+	if(!atomic_compare_exchange_weak_explicit(lock, &v, (v&0x80000000)|n, success, failure)) goto retry;
+	if(!(v&0x80000000)) return v;
+	if((uint32_t)n > (v &= 0x7FFFFFFF)){
+		n -= v;
+		_atomic_wake32(lock, (int)n+(n<0x7FFFFFFF));
+	}
+	return v;
+}
+// Set how many locks are available on a `lock_t` if the previous number of available slots matched the expected value `test_n`. If the test failed, the old value is returned and won't be equal to `test_n`. If the return value equals `test_n`, then it was overwritten. This function implies acquire & release memory ordering (see `lock_reset_explicit`)
+static inline uint32_t lock_test_and_reset(lock_t* lock, int32_t test_n, int32_t n){ return lock_test_and_reset_explicit(lock, test_n, n, memory_order_acq_rel, memory_order_acquire); }
 
 // Maximum number of slots a `lock_t` can hold available. Initializing the value to something higher than this limit, or releasing such that the value surpasses this limit, is undefined behavior. This value is guaranteed a power of two minus one that is no smaller than twice the available hardware concurrency.
 #define LOCK_MAX 2147483647
