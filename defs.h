@@ -85,7 +85,7 @@ static inline uint8_t _vqueue_protect(struct _vqueue_mapping* ctx, uint64_t ptr)
 			return n;
 		}
 		if(i >= 63){
-			struct flock l = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = (~current)>>40, .l_len = 1 };
+			struct flock l = { .l_start = (uint32_t)((~current)>>40), .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 			if(!fcntl(ctx->q->shmem_fd, _VQUEUE_F_GETLK, &l) && l.l_type == F_UNLCK){
 				// previous slot owner died, it's okay to replace the current value
 				i &= 7;

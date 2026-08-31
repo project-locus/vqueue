@@ -31,7 +31,7 @@ static inline struct _vqueue_mapping _vqueue_acquire_mapping(struct _vqueue* q){
 	atomic_fetch_add_explicit(&q->mapping.ref, 1, memory_order_relaxed);
 	struct _vqueue_shmem_region* region = (struct _vqueue_shmem_region*)(q->mapping.ptr<<6);
 	lock_release(&q->mapping.lock, 1);
-	return (struct _vqueue_mapping){q, {.data = region}, q->mapping.size_packed};
+	return (struct _vqueue_mapping){q, {.data = region}, (uint8_t)q->mapping.size_packed};
 }
 
 static inline struct _vqueue_mapping _vqueue_get_mapping_for(struct _vqueue* q, char* thing){
@@ -42,7 +42,7 @@ static inline struct _vqueue_mapping _vqueue_get_mapping_for(struct _vqueue* q, 
 	uint64_t sz = _vqueue_uncompress_size(v->size_packed);
 	if(thing >= region && thing < region + sz){
 		lock_release(&q->mapping.lock, 1);
-		return (struct _vqueue_mapping){q, {.data = (struct _vqueue_shmem_region*)region}, v->size_packed};
+		return (struct _vqueue_mapping){q, {.data = (struct _vqueue_shmem_region*)region}, (uint8_t)v->size_packed};
 	}
 	v = v->next;
 	if(v) goto next;
@@ -109,11 +109,11 @@ static void _vqueue_resize_mapping(struct _vqueue_mapping* ctx, uint8_t size_pac
 			break;
 		}
 	}
-	struct _vqueue_shmem_region* new_map = _vqueue_mmap(q->shmem_fd, 0, newsize);
+	struct _vqueue_shmem_region* new_map = (struct _vqueue_shmem_region*)_vqueue_mmap(q->shmem_fd, 0, newsize);
 	uint64_t ref = atomic_load_explicit(&q->mapping.ref, memory_order_relaxed);
 	if(ref > is_top){
 		// mapping still in use
-		struct _vqueue_mapping_descriptor* desc = malloc(sizeof(struct _vqueue_mapping_descriptor));
+		struct _vqueue_mapping_descriptor* desc = (struct _vqueue_mapping_descriptor*)malloc(sizeof(struct _vqueue_mapping_descriptor));
 		atomic_init(&desc->ref, ref - is_top);
 		desc->next = q->mapping.next;
 		desc->ptr = q->mapping.ptr; desc->size_packed = q->mapping.size_packed;
@@ -134,7 +134,7 @@ bool vqueue_open(vqueue_t* q, const char* name, size_t name_sz){
 	if(name_sz > NAME_MAX) name_sz = NAME_MAX;
 	// NAME_MAX is pretty small so alloca() is okay
 #ifdef __APPLE__
-	char* path = alloca(NAME_MAX + 10);
+	char* path = (char*)alloca(NAME_MAX + 10);
 	memcpy(path+9, name, name_sz);
 	memcpy(path, "/tmp/shm/", 9);
 	path[name_sz+9] = '\0';
@@ -154,9 +154,10 @@ bool vqueue_open(vqueue_t* q, const char* name, size_t name_sz){
 	uint64_t sz = _vqueue_uncompress_size(q->mapping.size_packed);
 	struct stat st;
 	fstat(q->shmem_fd, &st);
-	struct _vqueue_shmem_region* mapping = _vqueue_mmap(q->shmem_fd, 0, sz);
+	struct flock l;
+	struct _vqueue_shmem_region* mapping = (struct _vqueue_shmem_region*)_vqueue_mmap(q->shmem_fd, 0, sz);
 	if((size_t)st.st_size < sizeof(struct _vqueue_shmem_region) || !atomic_load_explicit(&mapping->lsize, memory_order_acquire)){
-		struct flock l = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0x1000000, .l_len = 1 };
+		l = { .l_start = 0x1000000, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 		if(fcntl(q->shmem_fd, F_SETLKW, &l)) goto err;
 		if(fstat(q->shmem_fd, &st)) goto err;
 		if((size_t)st.st_size < sizeof(struct _vqueue_shmem_region)){
@@ -178,7 +179,7 @@ bool vqueue_open(vqueue_t* q, const char* name, size_t name_sz){
 	q->mapping.next = 0;
 	obtain_id: {
 		q->aid = atomic_fetch_add_explicit(&mapping->open_counter, 1, memory_order_relaxed)&0xFFFFFF;
-		struct flock l = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = q->aid, .l_len = 1 };
+		l = { .l_start = q->aid, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 		if(fcntl(q->shmem_fd, _VQUEUE_F_SETLK, &l)){
 			if(errno == EACCES || errno == EAGAIN) goto obtain_id;
 			err:
@@ -205,7 +206,7 @@ bool vqueue_unlink(const char* name, size_t name_sz){
 	if(name_sz > NAME_MAX) name_sz = NAME_MAX;
 	// NAME_MAX is pretty small so alloca() is okay
 #ifdef __APPLE__
-	char* path = alloca(NAME_MAX + 10);
+	char* path = (char*)alloca(NAME_MAX + 10);
 	memcpy(path+9, name, name_sz);
 	memcpy(path, "/tmp/shm/", 9);
 	path[name_sz+9] = '\0';
@@ -332,7 +333,7 @@ static uint8_t* _vqueue_try_alloc(struct _vqueue_mapping* ctx, uint64_t rp, uint
 	//thread_memory_barrier(mb_co_acquire); // the cmpxchg already gave acquire
 	if(atomic_load_explicit(&ctx->data->lsize, memory_order_acquire) < expected_mapping_size){
 		int fd = ctx->q->shmem_fd;
-		struct flock l = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0x1000000, .l_len = 1 };
+		struct flock l = { .l_start = 0x1000000, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 		if(fcntl(fd, F_SETLKW, &l)) err: abort();
 		struct stat st;
 		if(fstat(fd, &st)) goto err;
@@ -401,14 +402,16 @@ void vqueue_post(vqueue_t* q, vqueue_block_t block){
 			goto retry;
 		}
 	}
-	struct _vqueue_msg_hdr* hdr = ((struct _vqueue_msg_hdr*) &ctx.data->blocks[ptr]) - 1;
-	uint64_t actual = _VQUEUE_PTR_INVALID;
-	if(!atomic_compare_exchange_strong_explicit(&hdr->next, &actual, new_ptr, memory_order_release, memory_order_relaxed)){
-		bool xchg_success = atomic_compare_exchange_strong_explicit(&ctx.data->tail, &ptr2, actual, memory_order_release, memory_order_relaxed);
-		_vqueue_unprotect(&ctx, ptr, n);
-		ptr = xchg_success ? actual : ptr2;
-		ptr &= 0xFFFFFFFFFF;
-		goto retry;
+	{
+		struct _vqueue_msg_hdr* hdr = ((struct _vqueue_msg_hdr*) &ctx.data->blocks[ptr]) - 1;
+		uint64_t actual = _VQUEUE_PTR_INVALID;
+		if(!atomic_compare_exchange_strong_explicit(&hdr->next, &actual, new_ptr, memory_order_release, memory_order_relaxed)){
+			bool xchg_success = atomic_compare_exchange_strong_explicit(&ctx.data->tail, &ptr2, actual, memory_order_release, memory_order_relaxed);
+			_vqueue_unprotect(&ctx, ptr, n);
+			ptr = xchg_success ? actual : ptr2;
+			ptr &= 0xFFFFFFFFFF;
+			goto retry;
+		}
 	}
 	_vqueue_unprotect(&ctx, ptr, n);
 	// if it fails another thread got it anyway
@@ -486,7 +489,7 @@ vqueue_block_t vqueue_wait(vqueue_t* q){
 
 static inline bool _vqueue_trim(struct _vqueue_mapping* ctx, uint64_t left, bool strict){
 	if(strict){
-		struct flock l = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_len = 1 };
+		struct flock l = { .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 		for(unsigned i = 0; i < 256; i++){
 			uint64_t v = atomic_load_explicit(&ctx->data->haztable[i], memory_order_relaxed);
 			if(!v) continue;
@@ -500,7 +503,7 @@ static inline bool _vqueue_trim(struct _vqueue_mapping* ctx, uint64_t left, bool
 	acq:
 	if(!atomic_compare_exchange_strong_explicit(&ctx->data->trim_lock, &actual, ctx->q->aid, memory_order_acquire, memory_order_relaxed)){
 		if(strict){
-			struct flock l = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = actual, .l_len = 1};
+			struct flock l = { .l_start = actual, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 			if(!fcntl(ctx->q->shmem_fd, _VQUEUE_F_GETLK, &l) && l.l_type == F_UNLCK)
 				goto acq;
 		}
@@ -528,7 +531,7 @@ static inline bool _vqueue_trim(struct _vqueue_mapping* ctx, uint64_t left, bool
 		struct _vqueue_msg_hdr* hdr = ((struct _vqueue_msg_hdr*) &ctx->data->blocks[left]) - 1;
 		uint32_t aid = atomic_load_explicit(&hdr->aid, memory_order_relaxed);
 		if(strict && (aid&0x3000000) != 0x3000000){
-			struct flock l = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = aid&0xFFFFFF, .l_len = 1};
+			struct flock l = { .l_start = aid&0xFFFFFF, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 			if(!fcntl(ctx->q->shmem_fd, _VQUEUE_F_GETLK, &l) && l.l_type == F_UNLCK) aid = 0xFFFFFFFF;
 		}
 		if(aid == 0xFFFFFFFF && _vqueue_check(ctx, left)){
@@ -555,7 +558,7 @@ static inline bool _vqueue_trim(struct _vqueue_mapping* ctx, uint64_t left, bool
 				right = rmax == r2 ? _vqueue_offsetof(right2) : _vqueue_offsetof(right1);
 				if((uint64_t)((char*)ctx->data->blocks[rmax] - (char*)ctx->data) < atomic_load_explicit(&ctx->data->lsize, memory_order_acquire)>>1){
 					int fd = ctx->q->shmem_fd;
-					struct flock l = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0x1000000, .l_len = 1 };
+					struct flock l = { .l_start = 0x1000000, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 					if(!fcntl(fd, F_SETLKW, &l)){
 						atomic_store_explicit(&ctx->data->lsize, 0, memory_order_relaxed);
 						thread_memory_barrier(mb_co_release);
