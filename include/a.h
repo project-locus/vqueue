@@ -49,6 +49,7 @@
 		#define bswap_32(x) _byteswap_ulong(x)
 		#define bswap_64(x) _byteswap_uint64(x)
 		#define _atomic_weaklink __declspec(selectany)
+		#define _loop_no_unroll _Pragma("loop(no_unroll)")
 	#else
 		#include <sys/types.h>
 		#include <sys/endian.h>
@@ -81,8 +82,15 @@
 	#include <byteswap.h>
 	#include <endian.h>
 #endif
-#ifndef _atomic_weaklink
+#ifndef _MSC_VER
 	#define _atomic_weaklink __attribute__((weak)) // GCC / clang
+	#ifdef __GNUC__
+		#define _loop_no_unroll _Pragma("GCC unroll 0")
+	#elif defined(__clang__)
+		#define _loop_no_unroll _Pragma("clang loop unroll(disable)")
+	#else
+		#define _loop_no_unroll
+	#endif
 #endif
 
 _atomic_weaklink _Atomic uint32_t _atomic_waiter_pool[32];
@@ -268,8 +276,8 @@ static inline void static_memory_barrier(memory_barrier_t flags){
 // You can disable it with `#define APPLE_NO_UNSTABLE_ULOCK` before including this header, which will cause the implementation to fall back to the yield loop on MacOS
 
 #define _atomic_futex_loop(addr, val, wait, s, y, order) int count = s; \
-	while(count--) if(atomic_load_explicit(addr, order) != val) return; else thread_relax(); \
-	count = y; while(count--) if(atomic_load_explicit(addr, order) != val) return; else thread_yield(); \
+	_loop_no_unroll while(count--) if(atomic_load_explicit(addr, order) != val) return; else thread_relax(); \
+	count = y; _loop_no_unroll while(count--) if(atomic_load_explicit(addr, order) != val) return; else thread_yield(); \
 	wait; goto check;
 
 // Yield the current thread's execution to allow other threads to run. This operation is slower than relaxing (see `thread_relax`) and should be preferred for long wait durations or when the system is under load.
@@ -422,7 +430,7 @@ static inline void thread_yield(void){ SwitchToThread(); }
 static inline void thread_sleep(uint64_t useconds){
 	useconds = (useconds+999) / 1000;
 	// useconds becomes milliseconds
-	while(useconds > _SLEEP_MAX){
+	_loop_no_unroll while(useconds > _SLEEP_MAX){
 		useconds -= _SLEEP_MAX;
 		Sleep(_SLEEP_MAX);
 	}
@@ -590,6 +598,8 @@ static inline uint64_t thread_now(void){
 	#define _atomic_futex_wake_small(addr, n) {}
 	#define _atomic_futex64(addr, val, c) c sched_yield()
 	#define _atomic_futex_wake64(addr, n) {}
+	#undef A_H_DEFAULT_YIELD
+	#define A_H_DEFAULT_YIELD 0
 
 #endif
 
@@ -638,10 +648,18 @@ static inline void _atomic_wait8(void* addr, uint8_t val){ _atomic_futex_small(a
 static inline void _atomic_wait16(_Atomic uint16_t* addr, uint16_t val){ _atomic_futex_small(addr, val, (0xFFFF0000u>>off), ) }
 static inline void _atomic_wait32(_Atomic uint32_t* addr, uint32_t val){ _atomic_futex32(addr, val); }
 static inline void _atomic_wait64(_Atomic uint64_t* addr, uint64_t val){ _atomic_futex64(addr, val, ); }
-static inline void _atomic_waitloop8(void* addr, uint8_t val, memory_order o){ _atomic_futex_loop((_Atomic uint8_t*)addr, val, _atomic_futex_small(addr, val, ~(255u<<off), check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o) }
-static inline void _atomic_waitloop16(_Atomic uint16_t* addr, uint16_t val, memory_order o){ _atomic_futex_loop(addr, val, _atomic_futex_small(addr, val, (0xFFFF0000u>>off), check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o) }
-static inline void _atomic_waitloop32(_Atomic uint32_t* addr, uint32_t val, memory_order o){ _atomic_futex_loop(addr, val, check: _atomic_futex32(addr, val), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o) }
-static inline void _atomic_waitloop64(_Atomic uint64_t* addr, uint64_t val, memory_order o){ _atomic_futex_loop(addr, val, _atomic_futex64(addr, val, check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o) }
+static inline void _atomic_waitloop8(void* addr, uint8_t val, memory_order o){
+	_atomic_futex_loop((_Atomic uint8_t*)addr, val, _atomic_futex_small(addr, val, ~(255u<<off), check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o)
+}
+static inline void _atomic_waitloop16(_Atomic uint16_t* addr, uint16_t val, memory_order o){
+	_atomic_futex_loop(addr, val, _atomic_futex_small(addr, val, (0xFFFF0000u>>off), check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o)
+}
+static inline void _atomic_waitloop32(_Atomic uint32_t* addr, uint32_t val, memory_order o){
+	_atomic_futex_loop(addr, val, check: _atomic_futex32(addr, val), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o)
+}
+static inline void _atomic_waitloop64(_Atomic uint64_t* addr, uint64_t val, memory_order o){
+	_atomic_futex_loop(addr, val, _atomic_futex64(addr, val, check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o)
+}
 
 static inline void _atomic_wake8_16(void* addr, int n){ _atomic_futex_wake_small(addr, n); }
 static inline void _atomic_wake32(void* addr, int n){ _atomic_futex_wake32(addr, n); }
@@ -651,11 +669,14 @@ static inline void _atomic_wake64(void* addr, int n){ _atomic_futex_wake64(addr,
 	#define _atomic_futex_arch _atomic_futex64
 	#define _atomic_wake_arch _atomic_wake64
 #else
-	#define _atomic_futex_arch _atomic_futex32
+	#define _atomic_futex_arch(a,v,c) c _atomic_futex32(a,v)
 	#define _atomic_wake_arch _atomic_wake32
 #endif
-static inline void _atomic_wait_ptr(void* a_, void* val){ _Atomic(void*)* addr = (_Atomic(void*)*)a_; _atomic_futex_arch(addr, val, ); }
-static inline void _atomic_waitloop_ptr(void* a_, void* val, memory_order o){ _Atomic(void*)* addr = (_Atomic(void*)*)a_; _atomic_futex_loop(addr, val, _atomic_futex_arch(addr, val, check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o) }
+static inline void _atomic_wait_ptr(void* a_, void* val){ _Atomic(void*)* addr = (_Atomic(void*)*)a_; _atomic_futex_arch(addr, val,); }
+static inline void _atomic_waitloop_ptr(void* a_, void* val, memory_order o){
+	_Atomic(void*)* addr = (_Atomic(void*)*)a_;
+	_atomic_futex_loop(addr, val, _atomic_futex_arch(addr, val, check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o)
+}
 
 // Notify an `atomic_wait` that the value may have changed
 // This will wake one or more threads waiting on the given address. `n` is the number of threads to wake, or `-1` to wake all threads. The implementation may wake more threads than requested, but will never wake fewer threads than requested or are waiting.
@@ -704,9 +725,9 @@ static inline void thread_sleep(uint64_t useconds){
 	ts.tv_sec = useconds/1000000;
 	ts.tv_nsec = (long)(useconds - (uint64_t)(ts.tv_sec)*1000000) * 1000;
 #ifdef __linux__
-	while(clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, &ts) && errno == EINTR);
+	_loop_no_unroll while(clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, &ts) && errno == EINTR);
 #else
-	while(nanosleep(&ts, &ts) && errno == EINTR);
+	_loop_no_unroll while(nanosleep(&ts, &ts) && errno == EINTR);
 #endif
 }
 
@@ -740,8 +761,8 @@ typedef _Atomic(ssize_t) atomic_ssize_t;
 
 #define _atomic_wait_until(key, cond, s, y) do{ \
 	int _atomic_count = s; \
-	while(_atomic_count--) if(cond) break; else thread_relax(); \
-	_atomic_count = y; while(_atomic_count--) if(cond) break; else thread_yield(); \
+	_loop_no_unroll while(_atomic_count--) if(cond) break; else thread_relax(); \
+	_atomic_count = y; _loop_no_unroll while(_atomic_count--) if(cond) break; else thread_yield(); \
 	void* _atomic_addr = (void*)(key); \
 	_Atomic uint32_t *_atomic_fut = &_atomic_waiter_pool[(((uintptr_t)_atomic_addr)^((uintptr_t)_atomic_addr>>5))&31]; \
 	uint32_t _atomic_tok = atomic_load_explicit(_atomic_fut, memory_order_acquire); \
@@ -789,9 +810,9 @@ static inline void lock_acquire_explicit(lock_t* lock, int32_t n, memory_order o
 			n = -v2;
 			// block
 			int count = A_H_DEFAULT_SPIN;
-			while(count--) if((v = atomic_load_explicit(lock, memory_order_relaxed)) & 0x7FFFFFFF) goto loop; else thread_relax();
+			_loop_no_unroll while(count--) if((v = atomic_load_explicit(lock, memory_order_relaxed)) & 0x7FFFFFFF) goto loop; else thread_relax();
 			count = A_H_DEFAULT_YIELD;
-			while(count--) if((v = atomic_load_explicit(lock, memory_order_relaxed)) & 0x7FFFFFFF) goto loop; else thread_yield();
+			_loop_no_unroll while(count--) if((v = atomic_load_explicit(lock, memory_order_relaxed)) & 0x7FFFFFFF) goto loop; else thread_yield();
 			if(!(v&0x80000000)) atomic_fetch_or_explicit(lock, 0x80000000, memory_order_relaxed), v |= 0x80000000;
 			_atomic_wait32(lock, v);
 			goto loop0;
@@ -809,9 +830,9 @@ static inline void lock_wait_acquire_explicit(lock_t* lock, int32_t wait_n, int3
 	if((v&0x7FFFFFFF) < (uint32_t)wait_n){
 		// block
 		int count = A_H_DEFAULT_SPIN;
-		while(count--) if(((v=atomic_load_explicit(lock, memory_order_relaxed))&0x7FFFFFFF) >= (uint32_t)wait_n) goto try_acq; else thread_relax();
+		_loop_no_unroll while(count--) if(((v=atomic_load_explicit(lock, memory_order_relaxed))&0x7FFFFFFF) >= (uint32_t)wait_n) goto try_acq; else thread_relax();
 		count = A_H_DEFAULT_YIELD;
-		while(count--) if(((v=atomic_load_explicit(lock, memory_order_relaxed))&0x7FFFFFFF) >= (uint32_t)wait_n) goto try_acq; else thread_yield();
+		_loop_no_unroll while(count--) if(((v=atomic_load_explicit(lock, memory_order_relaxed))&0x7FFFFFFF) >= (uint32_t)wait_n) goto try_acq; else thread_yield();
 		if(!(v&0x80000000)) atomic_fetch_or_explicit(lock, 0x80000000, memory_order_relaxed), v |= 0x80000000;
 		_atomic_wait32(lock, v);
 		uint32_t v = atomic_load_explicit(lock, memory_order_relaxed);
@@ -829,10 +850,10 @@ static inline void lock_wait_explicit(lock_t* lock, int32_t n, memory_order orde
 	uint32_t v;
 	// block
 	int count = A_H_DEFAULT_SPIN;
-	while(count--) if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7FFFFFFF)) return; else thread_relax();
+	_loop_no_unroll while(count--) if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7FFFFFFF)) return; else thread_relax();
 	count = A_H_DEFAULT_YIELD;
-	while(count--) if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7FFFFFFF)) return; else thread_yield();
-	while(true){
+	_loop_no_unroll while(count--) if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7FFFFFFF)) return; else thread_yield();
+	_loop_no_unroll while(true){
 		if(!(v&0x80000000)) atomic_fetch_or_explicit(lock, 0x80000000, memory_order_relaxed), v |= 0x80000000;
 		_atomic_wait32(lock, v);
 		if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7FFFFFFF)) return;
@@ -886,7 +907,8 @@ static inline uint32_t lock_saturating_release_explicit(lock_t* lock, int32_t n,
 	}
 	return v+n; // nv before saturation
 }
-// Release `n` slots from a `lock_t`, but clamping the number of available slots to at most `max_n`. Returns the number of slots that would have been available after incrementing but before clamping (hence, if the return value > `max_n`, saturation happened). Any threads waiting on another operation on this lock will have a chance to continue (i.e progress / return). The order of which threads progress first is not guaranteed but older waiters will typically progress sooner. This function implies release memory ordering (see `lock_saturating_release_explicit`)
+// Release `n` slots from a `lock_t`, but clamping the number of available slots to at most `max_n`. Returns the number of slots that would have been available after incrementing but before clamping (hence, if the return value > `max_n`, saturation happened).
+// Any threads waiting on another operation on this lock will have a chance to continue (i.e progress / return). The order of which threads progress first is not guaranteed but older waiters will typically progress sooner. This function implies release memory ordering (see `lock_saturating_release_explicit`)
 static inline uint32_t lock_saturating_release(lock_t* lock, int32_t n, int32_t max_n){ return lock_saturating_release_explicit(lock, n, max_n, memory_order_release); }
 
 // Overload for `lock_fetch` with a memory order that must be one of `memory_order_relaxed`, `memory_order_acquire` or `memory_order_seq_cst`
@@ -897,7 +919,7 @@ static inline uint32_t lock_fetch(lock_t* lock){ return atomic_load_explicit(loc
 // Overload for `lock_reset` with any memory order
 static inline uint32_t lock_reset_explicit(lock_t* lock, int32_t n, memory_order order){
 	uint32_t v = atomic_load_explicit(lock, memory_order_relaxed);
-	while(!atomic_compare_exchange_weak_explicit(lock, &v, (v&0x80000000)|n, order, memory_order_relaxed));
+	_loop_no_unroll while(!atomic_compare_exchange_weak_explicit(lock, &v, (v&0x80000000)|n, order, memory_order_relaxed));
 	if(!(v&0x80000000)) return v;
 	if((uint32_t)n > (v &= 0x7FFFFFFF)){
 		n -= v;
@@ -941,13 +963,6 @@ static inline uint32_t lock_test_and_reset(lock_t* lock, int32_t test_n, int32_t
 	#define CACHE_LINE 64
 #elif (CACHE_LINE)&((CACHE_LINE)-1)
 	#error CACHE_LINE must be a power-of-two
-#endif
-
-#ifdef A_H_NODEPRECATE
-#elif defined(__clang__) || defined(__GNUC__)
-	__attribute__((deprecated("Did you mean thread_sleep()?"))) unsigned sleep(unsigned);
-#elif defined(_MSC_VER)
-	__declspec(deprecated("Did you mean thread_sleep()?")) unsigned sleep(unsigned);
 #endif
 
 #if INT64_MAX <= INT_MAX
