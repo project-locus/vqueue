@@ -1,7 +1,7 @@
 /**
  * Atomics & threads complement library
  * Matthew Reiner, 2026
- * Available under the GPL 3.0 license
+ * Available under the MIT license
  * Targeting: Windows, Linux, FreeBSD, NetBSD, OpenBSD, MacOS
  * Implements the following:
  *  - Wait/Notify functionality for simple types up to 64 bit
