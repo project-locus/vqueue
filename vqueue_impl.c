@@ -157,7 +157,7 @@ bool vqueue_open(vqueue_t* q, const char* name, size_t name_sz){
 	struct flock l;
 	struct _vqueue_shmem_region* mapping = (struct _vqueue_shmem_region*)_vqueue_mmap(q->shmem_fd, 0, sz);
 	if((size_t)st.st_size < sizeof(struct _vqueue_shmem_region) || !atomic_load_explicit(&mapping->lsize, memory_order_acquire)){
-		l = { .l_start = 0x1000000, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
+		l = (struct flock){ .l_start = 0x1000000, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 		if(fcntl(q->shmem_fd, F_SETLKW, &l)) goto err;
 		if(fstat(q->shmem_fd, &st)) goto err;
 		if((size_t)st.st_size < sizeof(struct _vqueue_shmem_region)){
@@ -179,7 +179,7 @@ bool vqueue_open(vqueue_t* q, const char* name, size_t name_sz){
 	q->mapping.next = 0;
 	obtain_id: {
 		q->aid = atomic_fetch_add_explicit(&mapping->open_counter, 1, memory_order_relaxed)&0xFFFFFF;
-		l = { .l_start = q->aid, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
+		l = (struct flock){ .l_start = q->aid, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 		if(fcntl(q->shmem_fd, _VQUEUE_F_SETLK, &l)){
 			if(errno == EACCES || errno == EAGAIN) goto obtain_id;
 			err:

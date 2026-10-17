@@ -894,7 +894,7 @@ static inline void lock_release(lock_t* lock, int32_t n){ lock_release_explicit(
 // Overload for `lock_saturating_release` with any memory order
 static inline uint32_t lock_saturating_release_explicit(lock_t* lock, int32_t n, int32_t max_n, memory_order order){
 	uint32_t v = atomic_load_explicit(lock, memory_order_relaxed);
-	retry:
+	retry: {}
 	bool wake = v&0x80000000; v &= 0x7fffffff;
 	uint32_t nv = v+n;
 	if(nv > (uint32_t)max_n) nv = max_n;
