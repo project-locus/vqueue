@@ -804,15 +804,15 @@ static inline void lock_acquire_explicit(lock_t* lock, int32_t n, memory_order o
 	loop0: {}
 	uint32_t v = atomic_load_explicit(lock, memory_order_relaxed);
 	loop: {}
-	int32_t v2 = (int32_t)(v&0x7FFFFFFF)-n;
+	int32_t v2 = (int32_t)(v&0x7fffffff)-n;
 	if(v2<0){
 		if(atomic_compare_exchange_weak_explicit(lock, &v, v&0x80000000, memory_order_relaxed, memory_order_relaxed)){
 			n = -v2;
 			// block
 			int count = A_H_DEFAULT_SPIN;
-			_loop_no_unroll while(count--) if((v = atomic_load_explicit(lock, memory_order_relaxed)) & 0x7FFFFFFF) goto loop; else thread_relax();
+			_loop_no_unroll while(count--) if((v = atomic_load_explicit(lock, memory_order_relaxed)) & 0x7fffffff) goto loop; else thread_relax();
 			count = A_H_DEFAULT_YIELD;
-			_loop_no_unroll while(count--) if((v = atomic_load_explicit(lock, memory_order_relaxed)) & 0x7FFFFFFF) goto loop; else thread_yield();
+			_loop_no_unroll while(count--) if((v = atomic_load_explicit(lock, memory_order_relaxed)) & 0x7fffffff) goto loop; else thread_yield();
 			if(!(v&0x80000000)) atomic_fetch_or_explicit(lock, 0x80000000, memory_order_relaxed), v |= 0x80000000;
 			_atomic_wait32(lock, v);
 			goto loop0;
@@ -827,16 +827,16 @@ static inline void lock_acquire(lock_t* lock, int32_t n){ lock_acquire_explicit(
 static inline void lock_wait_acquire_explicit(lock_t* lock, int32_t wait_n, int32_t n, memory_order order){
 	uint32_t v = atomic_load_explicit(lock, memory_order_relaxed);
 	loop: {}
-	if((v&0x7FFFFFFF) < (uint32_t)wait_n){
+	if((v&0x7fffffff) < (uint32_t)wait_n){
 		// block
 		int count = A_H_DEFAULT_SPIN;
-		_loop_no_unroll while(count--) if(((v=atomic_load_explicit(lock, memory_order_relaxed))&0x7FFFFFFF) >= (uint32_t)wait_n) goto try_acq; else thread_relax();
+		_loop_no_unroll while(count--) if(((v=atomic_load_explicit(lock, memory_order_relaxed))&0x7fffffff) >= (uint32_t)wait_n) goto try_acq; else thread_relax();
 		count = A_H_DEFAULT_YIELD;
-		_loop_no_unroll while(count--) if(((v=atomic_load_explicit(lock, memory_order_relaxed))&0x7FFFFFFF) >= (uint32_t)wait_n) goto try_acq; else thread_yield();
+		_loop_no_unroll while(count--) if(((v=atomic_load_explicit(lock, memory_order_relaxed))&0x7fffffff) >= (uint32_t)wait_n) goto try_acq; else thread_yield();
 		if(!(v&0x80000000)) atomic_fetch_or_explicit(lock, 0x80000000, memory_order_relaxed), v |= 0x80000000;
 		_atomic_wait32(lock, v);
-		uint32_t v = atomic_load_explicit(lock, memory_order_relaxed);
-		if(v >= (uint32_t)wait_n) goto try_acq;
+		v = atomic_load_explicit(lock, memory_order_relaxed);
+		if((v&0x7fffffff) >= (uint32_t)wait_n) goto try_acq;
 		_atomic_wake32(lock, 1);
 	}else try_acq: if(atomic_compare_exchange_weak_explicit(lock, &v, v-(uint32_t)n /* keeps wait flag */, order, memory_order_relaxed))
 		return; // acquired
@@ -850,13 +850,13 @@ static inline void lock_wait_explicit(lock_t* lock, int32_t n, memory_order orde
 	uint32_t v;
 	// block
 	int count = A_H_DEFAULT_SPIN;
-	_loop_no_unroll while(count--) if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7FFFFFFF)) return; else thread_relax();
+	_loop_no_unroll while(count--) if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7fffffff)) return; else thread_relax();
 	count = A_H_DEFAULT_YIELD;
-	_loop_no_unroll while(count--) if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7FFFFFFF)) return; else thread_yield();
+	_loop_no_unroll while(count--) if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7fffffff)) return; else thread_yield();
 	_loop_no_unroll while(true){
 		if(!(v&0x80000000)) atomic_fetch_or_explicit(lock, 0x80000000, memory_order_relaxed), v |= 0x80000000;
 		_atomic_wait32(lock, v);
-		if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7FFFFFFF)) return;
+		if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7fffffff)) return;
 		_atomic_wake32(lock, 1);
 	}
 }
@@ -867,7 +867,7 @@ static inline void lock_wait(lock_t* lock, int32_t n){ lock_wait_explicit(lock, 
 static inline bool lock_test_and_acquire_explicit(lock_t* lock, int32_t test_n, int32_t n, memory_order success, memory_order failure){
 	uint32_t v = atomic_load_explicit(lock, failure);
 	loop: {}
-	int32_t v2 = (int32_t)(v&0x7FFFFFFF);
+	int32_t v2 = (int32_t)(v&0x7fffffff);
 	if(v2 < test_n) return false;
 	if(atomic_compare_exchange_weak_explicit(lock, &v, (uint32_t)(v2-n)|(v&0x80000000), success, failure)) return true; // acquired
 	goto loop;
@@ -883,9 +883,9 @@ static inline bool lock_try_acquire(lock_t* lock, int32_t n){ return lock_test_a
 static inline void lock_release_explicit(lock_t* lock, int32_t n, memory_order order){
 	uint32_t wk = atomic_fetch_add_explicit(lock, n, order);
 	if(wk&0x80000000){
-		atomic_fetch_and_explicit(lock, 0x7FFFFFFF, memory_order_relaxed);
+		atomic_fetch_and_explicit(lock, 0x7fffffff, memory_order_relaxed);
 		// We need to wake at least this many waiters. By waking one more waiter we guarantee that the waiting flag is set again if there are indeed more waiters
-		_atomic_wake32(lock, (int)n+(n<0x7FFFFFFF));
+		_atomic_wake32(lock, (int)n+(n<0x7fffffff));
 	}
 }
 // Release `n` slots from a `lock_t`. Any threads waiting on another operation on this lock will have a chance to continue (i.e progress / return). The order of which threads progress first is not guaranteed but older waiters will typically progress sooner. This function implies release memory ordering (see `lock_release_explicit`)
@@ -901,9 +901,9 @@ static inline uint32_t lock_saturating_release_explicit(lock_t* lock, int32_t n,
 	if(!atomic_compare_exchange_weak_explicit(lock, &v, nv, order, memory_order_relaxed)) goto retry;
 	n = nv-v;
 	if(wake){
-		atomic_fetch_and_explicit(lock, 0x7FFFFFFF, memory_order_relaxed);
+		atomic_fetch_and_explicit(lock, 0x7fffffff, memory_order_relaxed);
 		// We need to wake at least this many waiters. By waking one more waiter we guarantee that the waiting flag is set again if there are indeed more waiters
-		_atomic_wake32(lock, (int)n+(n<0x7FFFFFFF));
+		_atomic_wake32(lock, (int)n+(n<0x7fffffff));
 	}
 	return v+n; // nv before saturation
 }
@@ -912,18 +912,18 @@ static inline uint32_t lock_saturating_release_explicit(lock_t* lock, int32_t n,
 static inline uint32_t lock_saturating_release(lock_t* lock, int32_t n, int32_t max_n){ return lock_saturating_release_explicit(lock, n, max_n, memory_order_release); }
 
 // Overload for `lock_fetch` with a memory order that must be one of `memory_order_relaxed`, `memory_order_acquire` or `memory_order_seq_cst`
-static inline uint32_t lock_fetch_explicit(lock_t* lock, memory_order order){ return atomic_load_explicit(lock, order)&0x7FFFFFFF; }
+static inline uint32_t lock_fetch_explicit(lock_t* lock, memory_order order){ return atomic_load_explicit(lock, order)&0x7fffffff; }
 // See how many slots are available on a `lock_t`. This function implies acquire memory ordering (see `lock_fetch_explicit`)
-static inline uint32_t lock_fetch(lock_t* lock){ return atomic_load_explicit(lock, memory_order_acquire)&0x7FFFFFFF; }
+static inline uint32_t lock_fetch(lock_t* lock){ return atomic_load_explicit(lock, memory_order_acquire)&0x7fffffff; }
 
 // Overload for `lock_reset` with any memory order
 static inline uint32_t lock_reset_explicit(lock_t* lock, int32_t n, memory_order order){
 	uint32_t v = atomic_load_explicit(lock, memory_order_relaxed);
 	_loop_no_unroll while(!atomic_compare_exchange_weak_explicit(lock, &v, (v&0x80000000)|n, order, memory_order_relaxed));
 	if(!(v&0x80000000)) return v;
-	if((uint32_t)n > (v &= 0x7FFFFFFF)){
+	if((uint32_t)n > (v &= 0x7fffffff)){
 		n -= v;
-		_atomic_wake32(lock, (int)n+(n<0x7FFFFFFF));
+		_atomic_wake32(lock, (int)n+(n<0x7fffffff));
 	}
 	return v;
 }
@@ -937,9 +937,9 @@ static inline uint32_t lock_test_and_reset_explicit(lock_t* lock, int32_t test_n
 	if((v&0x7fffffff)!=(uint32_t)test_n) return v&0x7fffffff;
 	if(!atomic_compare_exchange_weak_explicit(lock, &v, (v&0x80000000)|n, success, failure)) goto retry;
 	if(!(v&0x80000000)) return v;
-	if((uint32_t)n > (v &= 0x7FFFFFFF)){
+	if((uint32_t)n > (v &= 0x7fffffff)){
 		n -= v;
-		_atomic_wake32(lock, (int)n+(n<0x7FFFFFFF));
+		_atomic_wake32(lock, (int)n+(n<0x7fffffff));
 	}
 	return v;
 }

@@ -164,7 +164,7 @@ bool vqueue_open(vqueue_t* q, const char* name, size_t name_sz){
 			if(ftruncate(q->shmem_fd, sz)) goto err;
 			atomic_init(&mapping->head, _VQUEUE_PTR_INVALID);
 			atomic_init(&mapping->tail, _VQUEUE_PTR_INVALID);
-			atomic_init(&mapping->trim_lock, 0xFFFFFFFF);
+			atomic_init(&mapping->trim_lock, 0xffffffff);
 #ifndef _VQUEUE_U_SEMA4
 			sem_init(&mapping->sema4, 1, 0);
 #endif
@@ -178,7 +178,7 @@ bool vqueue_open(vqueue_t* q, const char* name, size_t name_sz){
 	atomic_init(&q->mapping.ref, 0);
 	q->mapping.next = 0;
 	obtain_id: {
-		q->aid = atomic_fetch_add_explicit(&mapping->open_counter, 1, memory_order_relaxed)&0xFFFFFF;
+		q->aid = atomic_fetch_add_explicit(&mapping->open_counter, 1, memory_order_relaxed)&0xffffff;
 		l = (struct flock){ .l_start = q->aid, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 		if(fcntl(q->shmem_fd, _VQUEUE_F_SETLK, &l)){
 			if(errno == EACCES || errno == EAGAIN) goto obtain_id;
@@ -261,7 +261,7 @@ static inline void _vqueue_finish_pending_alloc(struct _vqueue_mapping* ctx, uin
 		if(emsz > ctx->size) _vqueue_resize_mapping(ctx, emsz);
 		struct _vqueue_msg_hdr* hdr = (struct _vqueue_msg_hdr*)&ctx->data->blocks[rinit] - 1;
 		uint32_t aid2 = atomic_load_explicit(&hdr->aid, memory_order_relaxed);
-		while(aid2 != 0xFFFFFFFF && !atomic_compare_exchange_weak_explicit(&hdr->aid, &aid2, 0x1000000|*v_>>40, memory_order_relaxed, memory_order_relaxed));
+		while(aid2 != 0xffffffff && !atomic_compare_exchange_weak_explicit(&hdr->aid, &aid2, 0x1000000|*v_>>40, memory_order_relaxed, memory_order_relaxed));
 		// safe init that writes what gc pass would need but yields to the more precise value written by the actual allocating thread
 		size_t sz2 = ((vm - rinit)<<6) - _VQUEUE_MSG_HDR_SIZE - 63, sz = atomic_load_explicit(&hdr->size, memory_order_relaxed);
 		while(((sz - sz2)>>6) && !atomic_compare_exchange_weak_explicit(&hdr->size, &sz, sz2+63, memory_order_relaxed, memory_order_relaxed));
@@ -300,7 +300,7 @@ static uint8_t* _vqueue_try_alloc(struct _vqueue_mapping* ctx, uint64_t rp, uint
 			
 			struct _vqueue_msg_hdr* hdr = (struct _vqueue_msg_hdr*)&ctx->data->blocks[v] - 1;
 			atomic_store_explicit(&hdr->next, _VQUEUE_PTR_INVALID, memory_order_relaxed);
-			atomic_store_explicit(&hdr->aid, 0xFFFFFFFF, memory_order_relaxed);
+			atomic_store_explicit(&hdr->aid, 0xffffffff, memory_order_relaxed);
 			atomic_store_explicit(&hdr->size, ((left-v)<<6)-63, memory_order_relaxed);
 			uint64_t v2 = v;
 			atomic_compare_exchange_strong_explicit(ctx->data8+rip, &v2, left, memory_order_relaxed, memory_order_relaxed);
@@ -499,7 +499,7 @@ static inline bool _vqueue_trim(struct _vqueue_mapping* ctx, uint64_t left, bool
 			}
 		}
 	}
-	uint32_t actual = 0xFFFFFFFF;
+	uint32_t actual = 0xffffffff;
 	acq:
 	if(!atomic_compare_exchange_strong_explicit(&ctx->data->trim_lock, &actual, ctx->q->aid, memory_order_acquire, memory_order_relaxed)){
 		if(strict){
@@ -531,10 +531,10 @@ static inline bool _vqueue_trim(struct _vqueue_mapping* ctx, uint64_t left, bool
 		struct _vqueue_msg_hdr* hdr = ((struct _vqueue_msg_hdr*) &ctx->data->blocks[left]) - 1;
 		uint32_t aid = atomic_load_explicit(&hdr->aid, memory_order_relaxed);
 		if(strict && (aid&0x3000000) != 0x3000000){
-			struct flock l = { .l_start = aid&0xFFFFFF, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
-			if(!fcntl(ctx->q->shmem_fd, _VQUEUE_F_GETLK, &l) && l.l_type == F_UNLCK) aid = 0xFFFFFFFF;
+			struct flock l = { .l_start = aid&0xffffff, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
+			if(!fcntl(ctx->q->shmem_fd, _VQUEUE_F_GETLK, &l) && l.l_type == F_UNLCK) aid = 0xffffffff;
 		}
-		if(aid == 0xFFFFFFFF && _vqueue_check(ctx, left)){
+		if(aid == 0xffffffff && _vqueue_check(ctx, left)){
 			uint64_t next = left + ((atomic_load_explicit(&hdr->size, memory_order_relaxed) + _VQUEUE_MSG_HDR_SIZE + 63) >> 6);
 			cleaned = true;
 			recheck:
@@ -580,7 +580,7 @@ static inline bool _vqueue_trim(struct _vqueue_mapping* ctx, uint64_t left, bool
 		}else break;
 	}
 	if(cleaned || strict) atomic_store_explicit(&ctx->data->failed_trim, 0, memory_order_relaxed);
-	atomic_store_explicit(&ctx->data->trim_lock, 0xFFFFFFFF, memory_order_release);
+	atomic_store_explicit(&ctx->data->trim_lock, 0xffffffff, memory_order_release);
 	return cleaned;
 }
 
@@ -588,7 +588,7 @@ void vqueue_free(vqueue_t* q, vqueue_block_t block){
 	struct _vqueue_mapping ctx = _vqueue_get_mapping_for(q, (char*)block.data);
 	uint64_t ptr = (char(*)[64])block.data - ctx.data->blocks;
 	struct _vqueue_msg_hdr* hdr = ((struct _vqueue_msg_hdr*) block.data) - 1;
-	atomic_store_explicit(&hdr->aid, 0xFFFFFFFF, memory_order_relaxed);
+	atomic_store_explicit(&hdr->aid, 0xffffffff, memory_order_relaxed);
 	if(atomic_load_explicit(&ctx.data->left, memory_order_acquire) != ptr || !_vqueue_trim(&ctx, ptr, false)){
 		uint64_t failed_trim = atomic_fetch_add_explicit(&ctx.data->failed_trim, block.size, memory_order_relaxed) + block.size;
 		uint64_t lsize = atomic_load_explicit(&ctx.data->lsize, memory_order_relaxed);
