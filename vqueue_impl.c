@@ -27,37 +27,37 @@ static inline void* _vqueue_mmap(HANDLE shm_mp, uint64_t off, size_t sz){
 #endif
 
 static inline struct _vqueue_mapping _vqueue_acquire_mapping(struct _vqueue* q){
-	lock_wait_acquire(&q->mapping.lock, (LOCK_MAX>>1)+1, 1);
+	shared_lock_acquire(&q->mapping.lock);
 	atomic_fetch_add_explicit(&q->mapping.ref, 1, memory_order_relaxed);
 	struct _vqueue_shmem_region* region = (struct _vqueue_shmem_region*)(q->mapping.ptr<<6);
-	lock_release(&q->mapping.lock, 1);
+	shared_lock_release(&q->mapping.lock);
 	return (struct _vqueue_mapping){q, {.data = region}, (uint8_t)q->mapping.size_packed};
 }
 
 static inline struct _vqueue_mapping _vqueue_get_mapping_for(struct _vqueue* q, char* thing){
-	lock_wait_acquire(&q->mapping.lock, (LOCK_MAX>>1)+1, 1);
+	shared_lock_acquire(&q->mapping.lock);
 	struct _vqueue_mapping_descriptor* v = &q->mapping;
 	next: {}
 	char* region = (char*)(v->ptr<<6);
 	uint64_t sz = _vqueue_uncompress_size(v->size_packed);
 	if(thing >= region && thing < region + sz){
-		lock_release(&q->mapping.lock, 1);
+		shared_lock_release(&q->mapping.lock);
 		return (struct _vqueue_mapping){q, {.data = (struct _vqueue_shmem_region*)region}, (uint8_t)v->size_packed};
 	}
 	v = v->next;
 	if(v) goto next;
 	else{
-		lock_release(&q->mapping.lock, 1);
+		shared_lock_release(&q->mapping.lock);
 		return (struct _vqueue_mapping){q, {0}, 0};
 	}
 }
 
 static inline void _vqueue_release_mapping(struct _vqueue_mapping ctx){
-	lock_wait_acquire(&ctx.q->mapping.lock, (LOCK_MAX>>1)+1, 1);
+	shared_lock_acquire(&ctx.q->mapping.lock);
 	uint64_t ptr1 = (uint64_t)ctx.data8 >> 6;
 	if(ctx.q->mapping.ptr == ptr1){
 		atomic_fetch_sub_explicit(&ctx.q->mapping.ref, 1, memory_order_relaxed);
-		lock_release(&ctx.q->mapping.lock, 1);
+		shared_lock_release(&ctx.q->mapping.lock);
 		return;
 	}
 	struct _vqueue_mapping_descriptor* v = ctx.q->mapping.next;
@@ -65,35 +65,33 @@ static inline void _vqueue_release_mapping(struct _vqueue_mapping ctx){
 		if(v->ptr != ptr1){ v = v->next; continue; }
 		
 		bool finished = atomic_fetch_sub_explicit(&v->ref, 1, memory_order_relaxed) == 1;
-		lock_release(&ctx.q->mapping.lock, 1);
+		shared_lock_release(&ctx.q->mapping.lock);
 		if(finished){
 			munmap(ctx.data8, _vqueue_uncompress_size(ctx.size));
-			lock_wait_acquire(&ctx.q->mapping.lock, (LOCK_MAX>>1)+1, (LOCK_MAX>>1)+1);
-			lock_acquire(&ctx.q->mapping.lock, LOCK_MAX>>1);
+			exclusive_lock_acquire(&ctx.q->mapping.lock);
 			struct _vqueue_mapping_descriptor** ov2 = &ctx.q->mapping.next, *v2 = *ov2;
 			while(v2){
 				if(v == v2){ *ov2 = v->next; break; }
 				v2 = *(ov2 = &v2->next);
 			}
-			lock_release(&ctx.q->mapping.lock, LOCK_MAX);
+			exclusive_lock_release(&ctx.q->mapping.lock);
 			free(v);
 		}
 		return;
 	}
 	// assert(false);
-	lock_release(&ctx.q->mapping.lock, 1);
+	shared_lock_release(&ctx.q->mapping.lock);
 }
 
 static void _vqueue_resize_mapping(struct _vqueue_mapping* ctx, uint8_t size_packed){
 	struct _vqueue* q = ctx->q;
 	uint64_t old1 = (uint64_t)ctx->data >> 6;
 	uint64_t newsize = _vqueue_uncompress_size(size_packed);
-	lock_wait_acquire(&q->mapping.lock, (LOCK_MAX>>1)+1, (LOCK_MAX>>1)+1);
-	lock_acquire(&q->mapping.lock, LOCK_MAX>>1);
+	exclusive_lock_acquire(&q->mapping.lock);
 	if(q->mapping.size_packed >= size_packed){
 		ctx->size = q->mapping.size_packed;
 		ctx->data8 = (_Atomic uint64_t*)(q->mapping.ptr<<6);
-		lock_release(&q->mapping.lock, LOCK_MAX);
+		exclusive_lock_release(&q->mapping.lock);
 		return;
 	}
 	bool is_top = old1 == q->mapping.ptr;
@@ -124,7 +122,7 @@ static void _vqueue_resize_mapping(struct _vqueue_mapping* ctx, uint8_t size_pac
 	}
 	q->mapping.ptr = (uint64_t)new_map >> 6;
 	q->mapping.size_packed = size_packed;
-	lock_release(&q->mapping.lock, LOCK_MAX);
+	exclusive_lock_release(&q->mapping.lock);
 	ctx->size = size_packed;
 	ctx->data8 = (_Atomic uint64_t*)new_map;
 }
@@ -188,7 +186,20 @@ bool vqueue_open(vqueue_t* q, const char* name, size_t name_sz){
 			return false;
 		}
 	}
-	atomic_init(&q->mapping.lock, LOCK_MAX);
+	shared_lock_init(&q->mapping.lock);
+#ifdef _VQUEUE_POSIX_FLOCK_DEFECT
+	uint64_t hash = 0;
+	while(name_sz >= sizeof(uint64_t)){
+		uint64_t v; memcpy(&v, name, sizeof(uint64_t));
+		name += sizeof(uint64_t); name_sz -= sizeof(uint64_t);
+		hash ^= v; hash = _vqueue_mix64(hash);
+	}
+	if(name_sz){
+		uint64_t v = 0; memcpy(&v, name, name_sz);
+		hash ^= v;
+	}
+	q->closeset = _vqueue_closetable_add(hash, q->shmem_fd);
+#endif
 	return true;
 }
 void vqueue_close(vqueue_t* q){
@@ -199,7 +210,11 @@ void vqueue_close(vqueue_t* q){
 		free(v); v = v2;
 	}
 	munmap((void*)(q->mapping.ptr<<6), _vqueue_uncompress_size(q->mapping.size_packed));
+#ifdef _VQUEUE_POSIX_FLOCK_DEFECT
+	_vqueue_closeset_deref(q->closeset);
+#else
 	close(q->shmem_fd); // clears locks
+#endif
 }
 bool vqueue_unlink(const char* name, size_t name_sz){
 	if(name_sz == (size_t)-1) name_sz = strlen(name);

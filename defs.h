@@ -7,13 +7,15 @@
 #define _VQUEUE_INIT_MAPPING 16384
 #define _VQUEUE_PTR_INVALID 0xFFFFFFFFFF
 
-#ifdef F_OFD_GETLK
+#if defined(F_OFD_GETLK) && !defined(_VQUEUE_POSIX_FLOCK_DEFECT)
 	#define _VQUEUE_F_GETLK F_OFD_GETLK
 	#define _VQUEUE_F_SETLK F_OFD_SETLK
-#else // for the OSes that don't have reasonable lock semantics, we have a fallback that involves sharing fds within the process
+#else // for the OSes that don't have reasonable lock semantics, we have a fallback that involves deferring fd closes
 	#define _VQUEUE_F_GETLK F_GETLK
 	#define _VQUEUE_F_SETLK F_SETLK
-	#define _VQUEUE_POSIX_FLOCK_DEFECT
+	#ifndef _VQUEUE_POSIX_FLOCK_DEFECT
+		#define _VQUEUE_POSIX_FLOCK_DEFECT
+	#endif
 #endif
 
 struct _vqueue_msg_hdr{
@@ -51,7 +53,7 @@ struct _vqueue_shmem_region{
 #define _vqueue_offsetof(member) ((&((struct _vqueue_shmem_region*)0x10000)->member)-(_Atomic uint64_t*)0x10000)
 
 struct _vqueue_mapping_descriptor{
-	lock_t lock;
+	shared_lock_t lock;
 	_Atomic uint32_t ref;
 	uint64_t ptr:40, size_packed:24;
 	struct _vqueue_mapping_descriptor *next;
@@ -73,19 +75,93 @@ struct _vqueue{
 
 #ifdef _VQUEUE_POSIX_FLOCK_DEFECT
 static shared_lock_t _vqueue_closetable_lock = SHARED_LOCK_INIT;
+// Maps hash -> chain of _vqueue_fd_set. hash_table_t is direct-mapped so colliding sets are chained via ->next
+static hash_table_t _vqueue_closetable = {0};
+static size_t _vqueue_closetable_count = 0;
 
 struct _vqueue_fd_set{
-	size_t count;
+	uint64_t hash;
+	struct _vqueue_fd_set* next;
 	lock_t lock;
-	union{ int fds[4]; int* fdv; };
+	atomic(size_t) count;
+	array_buffer_t fds;
+};
+
+static inline struct _vqueue_fd_set* _vqueue_closetable_find(uint64_t hash){
+	struct _vqueue_fd_set* set = (struct _vqueue_fd_set*)hash_table_find(&_vqueue_closetable, hash);
+	while(set && set->hash != hash) set = set->next;
+	return set;
+}
+
+// Must hold the exclusive part of _vqueue_closetable_lock
+static void _vqueue_closetable_grow(void){
+	hash_table_t old = _vqueue_closetable;
+	unsigned rank = hash_table_rank(&old);
+	_vqueue_closetable = (hash_table_t){0};
+	hash_table_set_rank(&_vqueue_closetable, rank+1);
+	for(uint64_t i = 0; i < 1ull<<rank; i++){
+		struct _vqueue_fd_set* set = (struct _vqueue_fd_set*)hash_table_find(&old, i);
+		while(set){
+			struct _vqueue_fd_set* next = set->next;
+			set->next = (struct _vqueue_fd_set*)hash_table_find(&_vqueue_closetable, set->hash);
+			hash_table_put(&_vqueue_closetable, set->hash, set);
+			set = next;
+		}
+	}
+	hash_table_set_rank(&old, 0);
 }
 
 static struct _vqueue_fd_set* _vqueue_closetable_add(uint64_t hash, int fd){
 	shared_lock_acquire(&_vqueue_closetable_lock);
-
+	struct _vqueue_fd_set* set = _vqueue_closetable_find(hash);
+	if(!set){
+		// shared part may have been dropped while upgrading, in which case another thread may have inserted it
+		if(!shared_lock_upgrade(&_vqueue_closetable_lock)) set = _vqueue_closetable_find(hash);
+		if(!set){
+			set = (struct _vqueue_fd_set*)malloc(sizeof(struct _vqueue_fd_set));
+			if(++_vqueue_closetable_count > 1ull<<hash_table_rank(&_vqueue_closetable)) _vqueue_closetable_grow();
+			set->hash = hash;
+			set->next = (struct _vqueue_fd_set*)hash_table_find(&_vqueue_closetable, hash);
+			atomic_init(&set->count, 0);
+			atomic_init(&set->lock, 0);
+			set->fds = (array_buffer_t){0};
+			hash_table_put(&_vqueue_closetable, hash, set);
+		}
+		exclusive_lock_downgrade(&_vqueue_closetable_lock);
+	}
+	// Other threads may be adding to this set concurrently under the shared part
+	lock_acquire(&set->lock, 1);
+	array_buffer_push(&set->fds, &fd, sizeof(fd));
+	atomic_fetch_add_explicit(&set->count, 1, memory_order_acquire);
+	lock_release(&set->lock, 1);
+	shared_lock_release(&_vqueue_closetable_lock);
+	return set;
 }
-static void _vqueue_closetable_remove(struct _vqueue_fd_set* set, int fd){
-	
+static void _vqueue_closeset_deref(struct _vqueue_fd_set* set){
+	size_t count = atomic_fetch_sub_explicit(&set->count, 1, memory_order_release);
+	if(count) return;
+	exclusive_lock_acquire(&_vqueue_closetable_lock);
+	struct _vqueue_fd_set* head = (struct _vqueue_fd_set*)hash_table_find(&_vqueue_closetable, set->hash);
+	if(!head) return; // not found, already freed
+	if(head == set){
+		hash_table_put(&_vqueue_closetable, set->hash, set->next);
+		_vqueue_closetable_count--;
+	}else{
+		struct _vqueue_fd_set* v = head;
+		while(v->next && v->next != set) v = v->next;
+		if(!v->next) return; // not found, already freed
+		v->next = set->next;
+		_vqueue_closetable_count--;
+	}
+	exclusive_lock_release(&_vqueue_closetable_lock);
+	array_iterator_t it = array_buffer_iterator(&set->fds, 0, -1ull);
+	int fd;
+	while(it.remaining){
+		array_iterator_next(&it, &fd, sizeof(fd));
+		close(fd);
+	}
+	array_buffer_destroy(&set->fds);
+	free(set);
 }
 #endif
 
