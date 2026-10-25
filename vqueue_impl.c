@@ -7,7 +7,7 @@
 #include <alloca.h>
 #include "defs.h"
 
-#define _VQUEUE_ERR_MSG "vqueue: mmap(): failed\nThis is likely an out-of-memory exception and is FATAL\n"
+#define _VQUEUE_ERR_MSG "vqueue: mmap() failed\nThis is likely an out-of-memory exception and is FATAL\n"
 #ifndef _WIN32
 #include <sys/mman.h>
 #include <errno.h>

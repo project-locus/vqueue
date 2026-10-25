@@ -1,4 +1,5 @@
-#include "a.h"
+#define POLYUTILS_INCLUDE_A_H
+#include <polyutils.h>
 #include <fcntl.h>
 #include <semaphore.h>
 
@@ -12,6 +13,7 @@
 #else // for the OSes that don't have reasonable lock semantics, we have a fallback that involves sharing fds within the process
 	#define _VQUEUE_F_GETLK F_GETLK
 	#define _VQUEUE_F_SETLK F_SETLK
+	#define _VQUEUE_POSIX_FLOCK_DEFECT
 #endif
 
 struct _vqueue_msg_hdr{
@@ -64,7 +66,28 @@ struct _vqueue_mapping{
 struct _vqueue{
 	int shmem_fd; uint32_t aid;
 	struct _vqueue_mapping_descriptor mapping;
+#ifdef _VQUEUE_POSIX_FLOCK_DEFECT
+	struct _vqueue_fd_set* closeset;
+#endif
 };
+
+#ifdef _VQUEUE_POSIX_FLOCK_DEFECT
+static shared_lock_t _vqueue_closetable_lock = SHARED_LOCK_INIT;
+
+struct _vqueue_fd_set{
+	size_t count;
+	lock_t lock;
+	union{ int fds[4]; int* fdv; };
+}
+
+static struct _vqueue_fd_set* _vqueue_closetable_add(uint64_t hash, int fd){
+	shared_lock_acquire(&_vqueue_closetable_lock);
+
+}
+static void _vqueue_closetable_remove(struct _vqueue_fd_set* set, int fd){
+	
+}
+#endif
 
 static inline uint64_t _vqueue_mix64(uint64_t x){
 	x *= 0x1ce4e5b9u;
