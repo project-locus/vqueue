@@ -204,13 +204,15 @@ static inline void thread_relax(void);
 				if(flags&12){ atomic_thread_fence(flags&4 ? memory_order_seq_cst : flags&1 ? memory_order_acq_rel : memory_order_release); return; }
 				atomic_thread_fence(memory_order_acquire);
 		#if defined(__ARM_ARCH) && __ARM_ARCH >= 7
-			}else if(flags&4) __asm__ __volatile__("dmb ishst" ::: "memory");
-			else if(flags&8){
+			}else if(flags&4){
+				__asm__ __volatile__("dmb ishst" ::: "memory");
+			}else if(flags&8){
 				__asm__ __volatile__("dmb ishst");
 				atomic_signal_fence(memory_order_release);
 		#else
-			}else if(flags&4) atomic_thread_fence(memory_order_seq_cst);
-			else if(flags&8){
+			}else if(flags&4){
+				atomic_thread_fence(memory_order_seq_cst);
+			}else if(flags&8){
 				atomic_thread_fence(memory_order_release);
 		#endif
 			}
@@ -604,7 +606,6 @@ static inline uint64_t thread_now(void){
 #endif
 
 #ifndef _atomic_futex_small
-	
 	// Main difference from linux: we don't have bitset, so _atomic_futex_small needs the same "wake the others" condition as _atomic_futex64
 	#define _atomic_futex_wake_small(addr, n) \
 		int off = ((uintptr_t)addr)&3; \
@@ -621,11 +622,9 @@ static inline uint64_t thread_now(void){
 		uint32_t v3 = atomic_load_explicit(addr2, memory_order_relaxed)^v; \
 		if(v3&m) return; \
 		if(v3^~m) _atomic_futex_wake32(addr2, INT_MAX);}
-	
 #endif
 
 #ifndef  _atomic_futex64
-
 	// Main difference from linux: we can't use the mask for additional waiter pool separation, so we compensate by using a better hash instead
 	#define _atomic_futex64(addr, val, check) \
 		_Atomic uint32_t *fut = &_atomic_waiter_pool[(((uintptr_t)addr>>3)^((uintptr_t)addr>>8))&31]; \
@@ -636,23 +635,22 @@ static inline uint64_t thread_now(void){
 		if(atomic_load_explicit(addr, memory_order_relaxed) != val) return; \
 		uint32_t tok2 = tok; if(tok2 == (tok=atomic_load_explicit(fut, /*this is okay: order between this and previous load doesn't matter, and the _atomic_futex_wake32 below provides us with acquire semantics*/ memory_order_relaxed))) return; \
 		_atomic_futex_wake32(fut, INT_MAX); }
-	
+
 	#define _atomic_futex_wake64(addr, n) \
 		_Atomic uint32_t *fut = &_atomic_waiter_pool[(((uintptr_t)addr>>3)^((uintptr_t)addr>>8))&31]; \
 		atomic_fetch_add_explicit(fut, 1, memory_order_release); \
 		_atomic_futex_wake32(fut, n)
-	
 #endif
 
 static inline void _atomic_wait8(void* addr, uint8_t val){ _atomic_futex_small(addr, val, ~(255u<<off), ) }
-static inline void _atomic_wait16(_Atomic uint16_t* addr, uint16_t val){ _atomic_futex_small(addr, val, (0xFFFF0000u>>off), ) }
+static inline void _atomic_wait16(_Atomic uint16_t* addr, uint16_t val){ _atomic_futex_small(addr, val, (0xffff0000u>>off), ) }
 static inline void _atomic_wait32(_Atomic uint32_t* addr, uint32_t val){ _atomic_futex32(addr, val); }
 static inline void _atomic_wait64(_Atomic uint64_t* addr, uint64_t val){ _atomic_futex64(addr, val, ); }
 static inline void _atomic_waitloop8(void* addr, uint8_t val, memory_order o){
 	_atomic_futex_loop((_Atomic uint8_t*)addr, val, _atomic_futex_small(addr, val, ~(255u<<off), check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o)
 }
 static inline void _atomic_waitloop16(_Atomic uint16_t* addr, uint16_t val, memory_order o){
-	_atomic_futex_loop(addr, val, _atomic_futex_small(addr, val, (0xFFFF0000u>>off), check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o)
+	_atomic_futex_loop(addr, val, _atomic_futex_small(addr, val, (0xffff0000u>>off), check:), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o)
 }
 static inline void _atomic_waitloop32(_Atomic uint32_t* addr, uint32_t val, memory_order o){
 	_atomic_futex_loop(addr, val, check: _atomic_futex32(addr, val), A_H_DEFAULT_SPIN, A_H_DEFAULT_YIELD, o)
@@ -817,7 +815,7 @@ static inline void lock_acquire_explicit(lock_t* lock, int32_t n, memory_order o
 			_atomic_wait32(lock, v);
 			goto loop0;
 		}
-	}else if(atomic_compare_exchange_weak_explicit(lock, &v, (uint32_t)v2|(v&0x80000000), order, memory_order_relaxed)) return; // acquired
+	}else if(atomic_compare_exchange_weak_explicit(lock, &v, (uint32_t)v2|(v&0x80000000), order, memory_order_relaxed)){ return; } // acquired
 	goto loop;
 }
 // Acquire `n` slots from a `lock_t`. If those slots are not available, the function will wait until corresponding `lock_release` has released them. Note that this function may acquire only some of the `n` slots at a time, which may cause deadlocks when acquiring more than one slot. This function implies acquire memory ordering (see `lock_acquire_explicit`)
@@ -838,8 +836,10 @@ static inline void lock_wait_acquire_explicit(lock_t* lock, int32_t wait_n, int3
 		v = atomic_load_explicit(lock, memory_order_relaxed);
 		if((v&0x7fffffff) >= (uint32_t)wait_n) goto try_acq;
 		_atomic_wake32(lock, 1);
-	}else try_acq: if(atomic_compare_exchange_weak_explicit(lock, &v, v-(uint32_t)n /* keeps wait flag */, order, memory_order_relaxed))
-		return; // acquired
+	}else{
+		try_acq: if(atomic_compare_exchange_weak_explicit(lock, &v, v-(uint32_t)n /* keeps wait flag */, order, memory_order_relaxed))
+			return; // acquired
+	}
 	goto loop;
 }
 // Wait until at least `wait_n` slots are available on a `lock_t`, and then acquire only `n`. If those slots are not available, the function will wait until corresponding `lock_release` has released them. Note that unlike `lock_acquire`, this function will not acquire any slots until at least `wait_n` are available, and when the slots are acquired, it is done atomically (i.e two concurrent acquire-waits cannot deadlock). This function implies acquire memory ordering (see `lock_wait_acquire_explicit`). If `n > wait_n`, the behavior is undefined.

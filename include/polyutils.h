@@ -262,7 +262,7 @@ noinline char* _ring_buffer_grow(ring_buffer_t* obj, char* dat, size_t* cap, siz
 	if(l+size > cap_){
 		memcpy(dat2, dat+l, cap_-l);
 		memcpy(dat2+(cap_-l), dat, l+size-cap_);
-	}else memcpy(dat2, dat+l, size);
+	}else{ memcpy(dat2, dat+l, size); }
 	obj->l = 0;
 	if(dat!=obj->data_i) free(dat);
 	obj->data = dat2; *cap = cap2;
@@ -340,7 +340,7 @@ noinline void _ring_buffer_shrink(ring_buffer_t* obj, char* dat, size_t cap){
 	if unlikely(used2 > cap-l){
 		memcpy(dat2, dat+l, cap-l);
 		memcpy(dat2+(cap-l), dat, l+used2-cap);
-	}else memcpy(dat2, dat+l, used2);
+	}else{ memcpy(dat2, dat+l, used2); }
 	obj->l = 0;
 	free(dat);
 }
@@ -466,7 +466,7 @@ templated size_t ring_iterator_skip(ring_iterator_t* obj, size_t sz, bool aligne
 
 templated void ring_buffer_destroy(ring_buffer_t* obj){
 	if(obj->cap_exp) free(obj->data);
-	if(DEBUG) memset(obj, 0xDE, sizeof(*obj));
+	if(DEBUG) memset(obj, 0xde, sizeof(*obj));
 }
 
 
@@ -626,7 +626,7 @@ templated size_t array_iterator_skip(array_iterator_t* obj, size_t sz){
 
 templated void array_buffer_destroy(array_buffer_t* obj){
 	if(obj->cap_exp) free(obj->data);
-	if(DEBUG) memset(obj, 0xDE, sizeof(*obj));
+	if(DEBUG) memset(obj, 0xde, sizeof(*obj));
 }
 
 #if SIZE_MAX >= UINT64_MAX
@@ -651,7 +651,7 @@ templated void hash_table_set_rank(hash_table_t* t, unsigned rank){
 		void* d = malloc(sizeof(void*)<<rank);
 		memset(d, 0, sizeof(void*)<<rank);
 		t->data = (uintptr_t)d;
-	}else t->data = 0;
+	}else{ t->data = 0; }
 }
 templated unsigned hash_table_rank(hash_table_t* t){ return t->cap_exp; }
 
