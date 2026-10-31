@@ -84,10 +84,10 @@
 #endif
 #ifndef _MSC_VER
 	#define _atomic_weaklink __attribute__((weak)) // GCC / clang
-	#ifdef __GNUC__
-		#define _loop_no_unroll _Pragma("GCC unroll 0")
-	#elif defined(__clang__)
+	#ifdef __clang__
 		#define _loop_no_unroll _Pragma("clang loop unroll(disable)")
+	#elif defined(__GNUC__)
+		#define _loop_no_unroll _Pragma("GCC unroll 0")
 	#else
 		#define _loop_no_unroll
 	#endif

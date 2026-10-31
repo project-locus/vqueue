@@ -419,14 +419,13 @@ static inline ring_iterator_t ring_buffer_iterator(ring_buffer_t* obj, size_t i,
 	return (ring_iterator_t){dat+l, dat+cap, cap_exp, count};
 }
 
-templated size_t ring_iterator_next(ring_iterator_t* obj, void* d, size_t sz, bool aligned){
+templated bool ring_iterator_next(ring_iterator_t* obj, void* d, size_t sz, bool aligned){
 	char *head = obj->head;
 	if(head >= obj->end){
 		size_t cap = obj->cap_exp;
 		if(cap) obj->head = head -= 1ull<<(int)cap, obj->cap_exp = 0, obj->end = head+obj->remaining;
 		else return false;
 	}
-	assert(sz <= obj->remaining, "Iterator overflow");
 	if(!aligned && head+sz > obj->end){
 		size_t sz2 = (size_t)(obj->end-obj->head);
 		memcpy(d, head, sz2);
@@ -438,19 +437,17 @@ templated size_t ring_iterator_next(ring_iterator_t* obj, void* d, size_t sz, bo
 		memcpy(d, head, sz);
 		obj->head = head+sz;
 	}
-	size_t rem = obj->remaining;
-	obj->remaining = rem-sz;
-	return rem;
+	obj->remaining -= sz;
+	return true;
 }
 
-templated size_t ring_iterator_skip(ring_iterator_t* obj, size_t sz, bool aligned){
+templated bool ring_iterator_skip(ring_iterator_t* obj, size_t sz, bool aligned){
 	char *head = obj->head;
 	if(head >= obj->end){
 		size_t cap = obj->cap_exp;
 		if(cap) obj->head = head -= 1ull<<(int)cap, obj->cap_exp = 0, obj->end = head+obj->remaining;
 		else return false;
 	}
-	assert(sz <= obj->remaining, "Iterator overflow");
 	if(!aligned && head+sz > obj->end){
 		size_t sz2 = (size_t)(obj->end-obj->head);
 		size_t cap = obj->cap_exp; // assumed, overrun is UB
@@ -459,9 +456,8 @@ templated size_t ring_iterator_skip(ring_iterator_t* obj, size_t sz, bool aligne
 		if(aligned) assert(head+sz <= obj->end && !(sz&(sz-1)), "Alignment condition violated");
 		obj->head = head+sz;
 	}
-	size_t rem = obj->remaining;
-	obj->remaining = rem-sz;
-	return rem;
+	obj->remaining -= sz;
+	return true;
 }
 
 templated void ring_buffer_destroy(ring_buffer_t* obj){
@@ -606,22 +602,20 @@ static inline array_iterator_t array_buffer_iterator(array_buffer_t* obj, size_t
 	return (array_iterator_t){(obj->cap_exp ? obj->data : obj->data_i)+i, count};
 }
 
-templated size_t array_iterator_next(array_iterator_t* obj, void* d, size_t sz){
-	assert(sz <= obj->remaining, "Iterator overflow");
+templated bool array_iterator_next(array_iterator_t* obj, void* d, size_t sz){
+	if(sz > obj->remaining) return false;
 	char *head = obj->head;
 	memcpy(d, head, sz);
 	obj->head = head+sz;
-	size_t rem = obj->remaining;
-	obj->remaining = rem-sz;
-	return rem;
+	obj->remaining -= sz;
+	return true;
 }
 
 templated size_t array_iterator_skip(array_iterator_t* obj, size_t sz){
-	assert(sz <= obj->remaining, "Iterator overflow");
+	if(sz > obj->remaining) return false;
 	obj->head += sz;
-	size_t rem = obj->remaining;
-	obj->remaining = rem-sz;
-	return rem;
+	obj->remaining -= sz;
+	return true;
 }
 
 templated void array_buffer_destroy(array_buffer_t* obj){
