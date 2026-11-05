@@ -22,6 +22,8 @@ void vqueue_post(vqueue_t* q, vqueue_block_t block);
 vqueue_block_t vqueue_wait(vqueue_t* q);
 void vqueue_free(vqueue_t* q, vqueue_block_t block);
 
+size_t vqueue_approx_buffered(vqueue_t* q);
+
 #ifdef VQUEUE_IMPL
 	#include "vqueue_impl.c"
 #endif

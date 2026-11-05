@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #define _FILE_OFFSET_BITS 64
 #include "vqueue.h"
 #include <limits.h>
@@ -611,4 +612,15 @@ void vqueue_free(vqueue_t* q, vqueue_block_t block){
 			_vqueue_trim(&ctx, ptr, true);
 	}
 	_vqueue_release_mapping(ctx);
+}
+
+size_t vqueue_approx_buffered(vqueue_t* q){
+	struct _vqueue_mapping ctx = _vqueue_acquire_mapping(q);
+	uint8_t n;
+	uint64_t left = _vqueue_pointer_acquire(&ctx, _vqueue_offsetof(left), &n);
+	uint64_t used = atomic_load_explicit(&ctx.data->right1, memory_order_relaxed) + atomic_load_explicit(&ctx.data->right2, memory_order_relaxed) - left;
+	used += atomic_load_explicit(&ctx.data->failed_trim, memory_order_relaxed);
+	_vqueue_unprotect(&ctx, left, n);
+	_vqueue_release_mapping(ctx);
+	return used;
 }
