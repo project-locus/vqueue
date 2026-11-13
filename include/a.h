@@ -12,7 +12,6 @@
  *  - Getting the current time
  *  - Simple semaphore primitive lock_t
  */
-
 #pragma once
 #if !defined(_GNU_SOURCE) && !defined(_DEFAULT_SOURCE)
 	#define _GNU_SOURCE
@@ -48,7 +47,7 @@
 		#define bswap_16(x) _byteswap_ushort(x)
 		#define bswap_32(x) _byteswap_ulong(x)
 		#define bswap_64(x) _byteswap_uint64(x)
-		#define _atomic_weaklink __declspec(selectany)
+		#define _a_h_weaklink __declspec(selectany)
 		#define _loop_no_unroll _Pragma("loop(no_unroll)")
 	#else
 		#include <sys/types.h>
@@ -83,7 +82,7 @@
 	#include <endian.h>
 #endif
 #ifndef _MSC_VER
-	#define _atomic_weaklink __attribute__((weak)) // GCC / clang
+	#define _a_h_weaklink __attribute__((weak)) // GCC / clang
 	#ifdef __clang__
 		#define _loop_no_unroll _Pragma("clang loop unroll(disable)")
 	#elif defined(__GNUC__)
@@ -93,7 +92,7 @@
 	#endif
 #endif
 
-_atomic_weaklink _Atomic uint32_t _atomic_waiter_pool[32];
+_a_h_weaklink _Atomic uint32_t _atomic_waiter_pool[32];
 // `lock_t` is a simple 32-bit semaphore primitive, it can be used as a mutex, semaphore, barrier, condition variable, etc...
 // It is guaranteed to be the most efficient waiting primitive on the platform. All operations best-case-scenario (i.e uncontended) are also guaranteed to be free from kernel context switch.
 // This type is implemented with futexes on linux/openbsd, `_umtx` on freebsd, `ulock` on macos, `WaitOnAddress` on windows and `sched_yield` on other POSIX systems.
@@ -106,6 +105,9 @@ typedef _Atomic uint32_t lock_t;
 	// Atomic qualifier. Can be used like `atomic T` or `atomic(T)`, identically to `_Atomic`. Not available in C++, to avoid conflicts with std::atomic.
 	#define atomic _Atomic
 	#define thread_local _Thread_local
+#else
+	#include <atomic>
+	#define atomic(x) ::std::atomic<x>
 #endif
 
 // Number of seconds in a microsecond (the unit used by all time-related functions in this library). Equal to one million (1,000,000) as a type of at least 64 bits
@@ -113,45 +115,46 @@ typedef _Atomic uint32_t lock_t;
 // Number of milliseconds in a microsecond (the unit used by all time-related functions in this library). Equal to one thousand (1,000) as a type of at least 64 bits
 #define MILLISECOND_US 1000ull
 
-// Thread priority constants. See `thread_set_priority`.
-typedef enum{
-	// `THREAD_PRIO_BACKGROUND` is for threads performing unimportant background work. It does not have any priority, and may be starved indefinitely if the system is under heavy load.
-	THREAD_PRIO_BACKGROUND,
-	// `THREAD_PRIO_NORMAL` is the default priority for threads created by this library. It is suitable for most work.
-	THREAD_PRIO_NORMAL,
-	// `THREAD_PRIO_REALTIME` is for threads performing time-sensitive work. Using this priority for everything is not recommended as it may unnecessarily starve normal priority threads. The OS is also free to ignore the hint or kill the process if abused.
-	THREAD_PRIO_REALTIME
-} thread_priority_t;
-
 // Memory barrier flags. These can be used with `thread_memory_barrier` to create custom memory barriers with specific ordering constraints, or with `static_memory_barrier` for compiler-only barriers. The `mb_acquire`, `mb_release`, `mb_acq_rel` and `mb_seq_cst` flags are provided for convenience and are equivalent to the corresponding C11 memory orders. The other flags can be used to create more fine-grained barriers.
 typedef enum memory_barrier_t{
 	mb_none = 0, // No ordering constraints
-	mb_read_read = 1, // Order all following reads after all previous reads
-	mb_read_write = 2, // Order all following writes after all previous reads
-	mb_write_read = 4, // Order all following reads after all previous writes
-	mb_write_write = 8, // Order all following writes after all previous writes
-	mb_total_order = 16, // Force a single total order over all operations with this flag set, in addition to the specified ordering constraints
-	mb_read_any = 3, // = `mb_read_read | mb_read_write`, order all following operations after all previous reads
-	mb_write_any = 12, // = `mb_write_read | mb_write_write`, order all following operations after all previous writes
-	mb_any_read = 5, // = `mb_read_read | mb_write_read`, order all following reads after all previous operations
-	mb_any_write = 10, // = `mb_read_write | mb_write_write`, order all following writes after all previous operations
-	mb_any_any = 15, // = `mb_read_read | mb_read_write | mb_write_read | mb_write_write`, order all following operations after all previous operations
+	mb_read_self = 1, // Order all preceding reads before this fence
+	mb_write_self = 2, // Order all preceding writes before this fence
+	mb_any_self = 3, // Order all preceding operations before this fence
+	mb_self_read = 4, // Order all following reads after this fence
+	mb_self_write = 8, // Order all following writes after this fence
+	mb_self_any = 12, // Order all following operations after this fence
+	mb_total_order = 16, // Force all operations with this flag set to participate in a shared total order
+	mb_read_read = 5, // = `mb_read_read | mb_read_write`, order all following reads after all previous reads
+	mb_read_write = 9, // = `mb_read_read | mb_read_write`, order all following writes after all previous reads
+	mb_write_read = 6, // = `mb_read_read | mb_read_write`, order all following reads after all previous writes
+	mb_write_write = 10, // = `mb_read_read | mb_read_write`, order all following writes after all previous writes
+	mb_read_any = 13, // = `mb_read_self | mb_self_any`, order all following operations after all previous reads
+	mb_write_any = 14, // = `mb_write_self | mb_self_any`, order all following operations after all previous writes
+	mb_any_read = 7, // = `mb_any_self | mb_self_read`, order all following reads after all previous operations
+	mb_any_write = 11, // = `mb_any_self | mb_self_write`, order all following writes after all previous operations
+	mb_any_any = 15, // = `mb_any_self | mb_self_any`, order all following operations after all previous operations
 	mb_relaxed = 0, // `memory_order_relaxed` is equivalent to `mb_none`. This enum exists for convenience
-	mb_acquire = 3, // `memory_order_acquire` is equivalent to `mb_read_any`. This enum exists for convenience
-	// mb_consume = 3,
-	mb_release = 10, // `memory_order_release` is equivalent to `mb_any_write`. This enum exists for convenience
-	mb_acq_rel = 11, // `memory_order_acq_rel` is equivalent to `mb_read_any | mb_any_write`. Note the absence of `mb_write_read`, which acq/rel semanrics do not actually provide. This enum exists for convenience
-	mb_co_acquire = 12, // Acquire semantics with respect to a write instead of a read, equivalent to `mb_write_any`
-	mb_co_release = 5, // Release semantics with respect to a read instead of a write, equivalent to `mb_any_read`
-	mb_co_acq_rel = 13, // See `mb_co_acquire` and `mb_co_release`. Equivalent to `mb_write_any | mb_any_read`. Note the absence of `mb_read_write`. This enum exists for convenience
-	mb_acq_co_rel = 7, // See `mb_acquire` and `mb_co_release`. Equivalent to `mb_read_any | mb_any_read`. Note the absence of `mb_write_write`. This enum exists for convenience
-	mb_rel_co_acq = 14, // See `mb_release` and `mb_co_acquire`. Equivalent to `mb_write_any | mb_any_write`. Note the absence of `mb_read_read`. This enum exists for convenience
-	mb_complete = 15, // Equivalent to `mb_any_any`. This ordering is guaranteed to be a superset of all C11 memory orderings and complementary orderings except seq_cst (i.e it guarantees no single total ordering). This enum exists for convenience
+	mb_acquire = 13, // `memory_order_acquire` is equivalent to `mb_read_any`. This enum exists for convenience
+	mb_release = 11, // `memory_order_release` is equivalent to `mb_any_write`. This enum exists for convenience
+	mb_complete = 15, // Equivalent to `mb_any_any`. This ordering is guaranteed to be a superset of all C11 memory orderings and complementary orderings except seq_cst (i.e it guarantees no shared total ordering). This enum exists for convenience
 	mb_seq_cst = 31, // `memory_order_seq_cst` is equivalent to `mb_any_any | mb_total_order`. This enum exists for convenience
 } memory_barrier_t;
 
 // `thread_memory_barrier` is a more flexible version of `atomic_thread_fence`. It accepts any combination of the flags defined by the `memory_barrier_t` enum (OR'd together) to create a memory barrier with specific ordering constraints. The exact implementation of the barrier is platform-specific, and may be a superset of the specified constraints.
 static inline void thread_memory_barrier(memory_barrier_t flags);
+
+// `location_memory_barrier` is a more flexible enforcement of memory ordering for individual atomic operations. It accepts any combination of the flags defined by the `memory_barrier_t` enum (OR'd together) to apply memory ordering constraints relative to the last observed modification order of a memory location. The exact implementation of the barrier is platform-specific, and may be a superset of the specified constraints.
+static void location_memory_barrier(void* loc, memory_barrier_t flags){
+	if(flags & mb_any_self) thread_memory_barrier((flags & mb_any_self) | mb_self_read);
+	if(flags & mb_total_order) (void)atomic_load_explicit((_Atomic volatile char*)loc, memory_order_seq_cst);
+	else if((flags & mb_read_self) && (flags & mb_self_any)) (void)atomic_load_explicit((_Atomic volatile char*)loc, memory_order_acquire);
+}
+
+// `thread_memory_barrier` is a more flexible version of `atomic_signal_fence`. It accepts any combination of the flags defined by the `memory_barrier_t` enum (OR'd together) to create a compiletime-only memory barrier with specific ordering constraints. The exact implementation of the barrier is platform-specific, and may be a superset of the specified constraints.
+static inline void static_memory_barrier(memory_barrier_t flags){
+	atomic_signal_fence(flags & mb_total_order || !(~flags & (mb_write_self | mb_self_read)) ? memory_order_seq_cst : (flags & mb_any_self) && (flags & mb_self_any) ? (flags & mb_any_self) == mb_read_self ? memory_order_acquire : memory_order_release : memory_order_relaxed);
+}
 
 // Hint to relax the current thread's execution for a short period of time, to reduce contention in spin-loops. This operation is faster than yielding (see `thread_yield`) and should be preferred for short-to-medium wait durations when the system is not under load. The duration of a relaxation is hardware-specific.
 static inline void thread_relax(void);
@@ -168,9 +171,10 @@ static inline void thread_relax(void);
 		// See the macro `THREAD_SPECULATION_FENCE_AVAILABLE`
 		static inline void thread_speculation_fence(void){ __builtin_ia32_lfence(); }
 	#endif
+
 	// In 2026 all major compilers have reasonable implementations (e.g `lock or` trick on clang or `lock inc` a temp on MSVC)
 	static inline void thread_memory_barrier(memory_barrier_t flags){
-		if(flags&20) atomic_thread_fence(memory_order_seq_cst);
+		if((flags & mb_total_order) || (flags & mb_write_read) == mb_write_read) atomic_thread_fence(memory_order_seq_cst);
 	}
 #elif defined(__aarch64__) || defined(__arm__) || defined(_M_ARM64) || defined(_M_ARM)
 	#if defined(__has_include)
@@ -181,42 +185,16 @@ static inline void thread_relax(void);
 
 	#ifdef _MSC_VER
 		#include <intrin.h>
+
 		static inline void thread_relax(void){ __yield(); }
-		static inline void thread_memory_barrier(memory_barrier_t flags){
-			if(flags&16){ atomic_thread_fence(memory_order_seq_cst); return; }
-			if(flags&3){
-				if(flags&12){ atomic_thread_fence(flags&4 ? memory_order_seq_cst : flags&1 ? memory_order_acq_rel : memory_order_release); return; }
-				atomic_thread_fence(memory_order_acquire);
-			}else if(flags&4){
-				__dmb(_ARM64_BARRIER_ISHST);
-				_ReadWriteBarrier();
-			}else if(flags&8){
-				__dmb(_ARM64_BARRIER_ISHST);
-				atomic_signal_fence(memory_order_release);
-			}
-		}
+		#define _arm64_dmb_ishst() (__dmb(_ARM64_BARRIER_ISHST), atomic_signal_fence(memory_order_seq_cst))
 	#else
 		static inline void thread_relax(void){  __asm__ __volatile__("yield"); }
-
-		static inline void thread_memory_barrier(memory_barrier_t flags){
-			if(flags&16){ atomic_thread_fence(memory_order_seq_cst); return; }
-			if(flags&3){
-				if(flags&12){ atomic_thread_fence(flags&4 ? memory_order_seq_cst : flags&1 ? memory_order_acq_rel : memory_order_release); return; }
-				atomic_thread_fence(memory_order_acquire);
 		#if defined(__ARM_ARCH) && __ARM_ARCH >= 7
-			}else if(flags&4){
-				__asm__ __volatile__("dmb ishst" ::: "memory");
-			}else if(flags&8){
-				__asm__ __volatile__("dmb ishst");
-				atomic_signal_fence(memory_order_release);
+			#define _arm64_dmb_ishst() __asm__ __volatile__("dmb ishst" ::: "memory")
 		#else
-			}else if(flags&4){
-				atomic_thread_fence(memory_order_seq_cst);
-			}else if(flags&8){
-				atomic_thread_fence(memory_order_release);
+			#define _arm64_dmb_ishst() atomic_thread_fence(memory_order_release);
 		#endif
-			}
-		}
 		#if defined(__ARM_ARCH) && __ARM_ARCH >= 8
 			// Thread speculation fences are available on modern ARM-based CPUs using the `csdb` instruction, which was specifically introduced in light of speculative execution side-channel attacks revealed circa 2018. This macro signals the availability of the `thread_speculation_fence` function, which provides an interface to this instruction.
 			#define THREAD_SPECULATION_FENCE_AVAILABLE
@@ -224,46 +202,64 @@ static inline void thread_relax(void);
 			static inline void thread_speculation_fence(void){ __asm__ __volatile__("csdb" ::: "memory"); }
 		#endif
 	#endif
+
+	static inline void thread_memory_barrier(memory_barrier_t flags){
+		if(flags & mb_total_order){ atomic_thread_fence(memory_order_seq_cst); return; }
+		if((flags & mb_any_self) == mb_read_self){
+			atomic_thread_fence(memory_order_acquire);
+		}else if(flags == mb_write_write){
+			_arm64_dmb_ishst();
+		}else if((flags & mb_any_self) && (flags & mb_self_any)) atomic_thread_fence(memory_order_seq_cst);
+	}
 #elif defined(__riscv)
 	#if defined(__riscv_zihintpause)
 		static inline void thread_relax(void){ __asm__ __volatile__("pause"); }
 	#else
 		static inline void thread_relax(void){ __asm__ __volatile__("nop"); }
 	#endif
+
 	static inline void thread_memory_barrier(memory_barrier_t flags){
+		if(flags & mb_total_order) return (void)atomic_thread_fence(memory_order_seq_cst);
 		switch((int)flags){
 			case 0: break;
 	#define _A_FENCE_TYPE(n, asm) case n: __asm__ __volatile__(asm); break;
-			_A_FENCE_TYPE(1, "fence r, r")
-			_A_FENCE_TYPE(2, "fence r, w")
-			_A_FENCE_TYPE(3, "fence r, rw")
-			_A_FENCE_TYPE(4, "fence w, r")
-			_A_FENCE_TYPE(5, "fence rw, r")
-			_A_FENCE_TYPE(6, "fence w, r; fence r, w")
-			_A_FENCE_TYPE(7, "fence w, r; fence r, rw")
-			_A_FENCE_TYPE(8, "fence w, w")
-			_A_FENCE_TYPE(9, "fence w, w; fence r, r")
-			_A_FENCE_TYPE(10, "fence rw, w")
-			_A_FENCE_TYPE(11, "fence rw, w; fence r, r")
-			_A_FENCE_TYPE(12, "fence w, rw")
-			_A_FENCE_TYPE(13, "fence w, rw; fence r, r")
-			_A_FENCE_TYPE(14, "fence rw, w; fence w, r")
+			_A_FENCE_TYPE(mb_read_read, "fence r, r")
+			_A_FENCE_TYPE(mb_read_write, "fence r, w")
+			_A_FENCE_TYPE(mb_write_read, "fence w, r")
+			_A_FENCE_TYPE(mb_write_write, "fence w, w")
+			_A_FENCE_TYPE(mb_any_read, "fence rw, r")
+			_A_FENCE_TYPE(mb_any_write, "fence rw, w")
+			_A_FENCE_TYPE(mb_read_any, "fence r, rw")
+			_A_FENCE_TYPE(mb_write_any, "fence w, rw")
+			_A_FENCE_TYPE(mb_any_any, "fence rw, rw")
 	#undef _A_FENCE_TYPE
-			default: __asm__ __volatile__("fence rw, rw");
 		}
-		atomic_signal_fence((flags&~3) == 0 ? flags ? memory_order_acquire : memory_order_relaxed : (flags&~3) == 8 ? flags&1 ? memory_order_acq_rel : memory_order_release : memory_order_seq_cst);
+		static_memory_barrier(flags);
+	}
+#elif defined(__powerpc__)
+	#include <sys/platform/ppc.h>
+
+	#ifdef _ARCH_PWR7
+		static inline void thread_relax(void){ __ppc_yield(); }
+	#else
+		static inline void thread_relax(void){ __asm__ __volatile__("nop"); }
+	#endif
+	#define THREAD_SPECULATION_FENCE_AVAILABLE
+	static inline void thread_speculation_fence(void){ __asm__ volatile("isync" ::: "memory"); }
+
+	static inline void thread_memory_barrier(memory_barrier_t flags){
+		// R-lwsync-sync (and similar) unfavorable outcome is technically permitted by power ISA but in practice is never observed.
+		if(flags & mb_total_order || !(~flags & (mb_write_self | mb_self_read))) atomic_thread_fence(memory_order_seq_cst);
+		else if((flags & mb_any_self) && (flags & mb_self_any)) atomic_thread_fence(memory_order_acq_rel);
+		static_memory_barrier(flags);
 	}
 #else
 	static inline void thread_relax(void){ __asm__ __volatile__("nop"); }
+
 	static inline void thread_memory_barrier(memory_barrier_t flags){
-		atomic_thread_fence((flags&~3) == 0 ? flags ? memory_order_acquire : memory_order_relaxed : (flags&~3) == 8 ? flags&1 ? memory_order_acq_rel : memory_order_release : memory_order_seq_cst);
+		atomic_thread_fence(flags & mb_total_order || !(~flags & (mb_write_self | mb_self_read)) ? memory_order_seq_cst : (flags & mb_any_self) && (flags & mb_self_any) ? (flags & mb_any_self) == mb_read_self ? memory_order_acquire : memory_order_release : memory_order_relaxed);
 	}
 #endif
-
-// `thread_memory_barrier` is a more flexible version of `atomic_signal_fence`. It accepts any combination of the flags defined by the `memory_barrier_t` enum (OR'd together) to create a compiletime-only memory barrier with specific ordering constraints. The exact implementation of the barrier is platform-specific, and may be a superset of the specified constraints.
-static inline void static_memory_barrier(memory_barrier_t flags){
-	atomic_signal_fence(((int)flags&~3) == 0 ? flags ? memory_order_acquire : memory_order_relaxed : ((int)flags&~3) == 8 ? flags&1 ? memory_order_acq_rel : memory_order_release : memory_order_seq_cst);
-}
 
 #ifndef A_H_DEFAULT_SPIN
 	// Try to thread_relax() this many times while waiting on an atomic.
@@ -282,8 +278,12 @@ static inline void static_memory_barrier(memory_barrier_t flags){
 	count = y; _loop_no_unroll while(count--) if(atomic_load_explicit(addr, order) != val) return; else thread_yield(); \
 	wait; goto check;
 
-// Yield the current thread's execution to allow other threads to run. This operation is slower than relaxing (see `thread_relax`) and should be preferred for long wait durations or when the system is under load.
-static inline void thread_yield(void);
+// Thread priority constants. See `thread_set_priority`.
+typedef enum{
+	THREAD_PRIO_BACKGROUND, // For threads performing unimportant background work. It does not have any priority, and may be starved indefinitely if the system is under heavy load.
+	THREAD_PRIO_NORMAL, // Default priority for threads created by this library. It is suitable for most work.
+	THREAD_PRIO_REALTIME // For threads performing time-sensitive work. Using this priority for everything is not recommended as it may unnecessarily starve normal priority threads. The OS is also free to ignore the hint or kill the process if abused.
+} thread_priority_t;
 
 // Returns the a hint for the maximum available concurrency on this system. Assigning busy work to more threads than this is more likely to be detrimental to performance than beneficial.
 static inline size_t available_concurrency(void);
@@ -291,15 +291,15 @@ static inline size_t available_concurrency(void);
 // Set the current thread's priority. See the `thread_priority_t` enum for possible values. Returns `true` on success, `false` on failure (e.g. if the OS does not support thread priorities or if the calling thread does not have permission to set its own priority).
 static inline bool thread_set_priority(thread_priority_t p);
 
+// Yield the current thread's execution to allow other threads to run. This operation is slower than relaxing (see `thread_relax`) and should be preferred for long wait durations or when the system is under load.
+static inline void thread_yield(void);
 // Sleep for the given number of microseconds. Note that the actual sleep duration may be longer than the requested duration, especially if the system is under load or if the requested duration is very short (e.g. less than 1 millisecond).
 static inline void thread_sleep(uint64_t useconds);
 
 // Monotonic time in microseconds. This clock is guaranteed to be steady (i.e. it will never go backwards) and is not affected by changes to the system time. This clock is not guaranteed to be the "truth", it may drift relative to other physical machines. (time measurement is not objective and inherently imprecise due to a multitude of physics constraints)
 static inline uint64_t mono_now(void);
-
 // Time in microseconds since Jan 1st 1970 ("UNIX timestamp"). This clock is not guaranteed to be steady (i.e. it may jump backwards/forwards due to changes to the system time. This clock is not guaranteed to be the "truth", it may naturally drift relative to other physical machines. (time measurement is not objective and inherently imprecise due to a multitude of physics constraints)
 static inline uint64_t epoch_now(void);
-
 // Time in microseconds that the current thread has been running. This clock is guaranteed to be steady (i.e. it will never go backwards), but not guaranteed to start from `0` at thread creation. This clock does not go up while the current thread is blocking, preempted, or the system is in sleep, it is mainly used to measure CPU usage by comparing values taken at different times.
 static inline uint64_t thread_now(void);
 
@@ -385,7 +385,7 @@ struct _thread_t{
 
 static inline size_t available_concurrency(void){ DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS); return n <= 0 ? 1 : n; }
 
-_atomic_weaklink _Thread_local thread_t _a_thread_self = (thread_t)-1;
+_a_h_weaklink _Thread_local thread_t _a_thread_self = (thread_t)-1;
 
 static inline DWORD WINAPI _thread_wrapper(void* a_){
 	struct _thread_t* a = _a_thread_self = (struct _thread_t*)a_;
