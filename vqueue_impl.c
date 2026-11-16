@@ -346,7 +346,7 @@ static uint8_t* _vqueue_try_alloc(struct _vqueue_mapping* ctx, uint64_t rp, uint
 	}
 	uint8_t emsz = _vqueue_compress_size((char*)&ctx->data->blocks[v2] - (char*)ctx->data);
 	uint64_t expected_mapping_size = _vqueue_uncompress_size(emsz);
-	//thread_memory_barrier(mb_co_acquire); // the cmpxchg already gave acquire
+	//thread_memory_barrier(mb_write_any); // the cmpxchg already gave acquire
 	if(atomic_load_explicit(&ctx->data->lsize, memory_order_acquire) < expected_mapping_size){
 		int fd = ctx->q->shmem_fd;
 		struct flock l = { .l_start = 0x1000000, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
@@ -577,7 +577,7 @@ static inline bool _vqueue_trim(struct _vqueue_mapping* ctx, uint64_t left, bool
 					struct flock l = { .l_start = 0x1000000, .l_len = 1, .l_type = F_WRLCK, .l_whence = SEEK_SET };
 					if(!fcntl(fd, F_SETLKW, &l)){
 						atomic_store_explicit(&ctx->data->lsize, 0, memory_order_relaxed);
-						thread_memory_barrier(mb_co_release);
+						thread_memory_barrier(mb_any_read);
 						uint64_t r1 = atomic_load_explicit(&ctx->data->right1, memory_order_relaxed);
 						uint64_t r2 = atomic_load_explicit(&ctx->data->right2, memory_order_relaxed);
 						rmax = r2 >= r1 ? r2 : r1;

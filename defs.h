@@ -180,7 +180,7 @@ static inline uint8_t _vqueue_protect(struct _vqueue_mapping* ctx, uint64_t ptr)
 		uint64_t current = 0;
 		retry:
 		if(atomic_compare_exchange_strong_explicit(&ctx->data->haztable[n], &current, ptr, memory_order_acquire, memory_order_relaxed)){
-			//thread_memory_barrier(mb_co_acquire); // cmpxchg acquired, even though we discarded the result this is still good
+			//thread_memory_barrier(mb_write_any); // cmpxchg acquired, even though we discarded the result this is still good
 			return n;
 		}
 		if(i >= 63){
@@ -204,7 +204,7 @@ static inline void _vqueue_unprotect(struct _vqueue_mapping* ctx, uint64_t ptr, 
 }
 
 static inline bool _vqueue_check(struct _vqueue_mapping* ctx, uint64_t ptr){
-	thread_memory_barrier(mb_co_release);
+	thread_memory_barrier(mb_any_read);
 	uint8_t h = _vqueue_mix64(ptr), h2 = h&7; h &= ~7;
 	for(unsigned i = 0; i < 8; i++){
 		_Atomic uint64_t* slot = &ctx->data->haztable[h|((h2+i)&7)];
@@ -214,7 +214,7 @@ static inline bool _vqueue_check(struct _vqueue_mapping* ctx, uint64_t ptr){
 			return false;
 		}
 	}
-	thread_memory_barrier(mb_acquire);
+	thread_memory_barrier(mb_read_any);
 	return true;
 }
 
