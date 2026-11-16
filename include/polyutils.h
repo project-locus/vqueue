@@ -194,16 +194,16 @@ deprecated("puts() with -DNO_STDIO") static int (*const puts_2)(const char*) = p
 	#if SIZE_MAX == UINT_MAX
 		#define bit_magz(x) ((size_t)(__INT_WIDTH__-__builtin_clz(x)))
 	#else
-		#define bit_magz(x) ((size_t)(__LLONG_WIDTH__-__builtin_clzll(x)))
+		#define bit_magz(x) ((size_t)(__LLONG_WIDTH__-__builtin_clzll((size_t)(x))))
 	#endif
-	#define bit_mag64(x) ((size_t)(__LLONG_WIDTH__-__builtin_clzll(x)))
+	#define bit_mag64(x) ((size_t)(__LLONG_WIDTH__-__builtin_clzll((uint64_t)(x))))
 	#if UINT_MAX == UINT32_MAX
 		#define bit_mag32(x) ((size_t)(__INT_WIDTH__-__builtin_clz(x)))
 	#else
-		#define bit_mag32(x) ((size_t)(__LONG_WIDTH__-__builtin_clzl(x)))
+		#define bit_mag32(x) ((size_t)(__LONG_WIDTH__-__builtin_clzl((uint32_t)(x))))
 	#endif
-	#define bit_mag16(x) ((size_t)(__INT_WIDTH__-__builtin_clz(x)))
-	#define bit_mag8(x) ((size_t)(__INT_WIDTH__-__builtin_clz(x)))
+	#define bit_mag16(x) ((size_t)(__INT_WIDTH__-__builtin_clz((uint16_t)(x))))
+	#define bit_mag8(x) ((size_t)(__INT_WIDTH__-__builtin_clz((uint8_t)(x))))
 
 	#define templated static __attribute__((always_inline)) inline
 	#define noinline static __attribute__((noinline))
