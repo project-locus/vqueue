@@ -494,8 +494,7 @@ static inline uint64_t thread_now(void){
 	// Note on _atomic_futex_small:
 	// Every 8 bit value is inside some aligned 32 bit value that doesn't cross a page boundary, same for 16 bit
 	// C standard might say loading this 32 bit value is UB and to that I say BITE ME
-	// We use volatile here to break the compiler's assumptions about memory
-	// This does not "fix" the UB, but does make the UB mostly non-actionable to the compiler in practice
+	// We use volatile here to break the compiler's assumptions about memory. This does not "fix" the UB, but does make the UB mostly non-actionable to the compiler in practice
 	// If you sacrifice performance for "idiomatic correctness" you are a sucker and PRs as such will not be accepted
 	// We use bitset to guarantee that wake ops will wakes the correct thread, even if multiple threads are waiting
 	//   on the same 32 bit word but different 8/16 bit portions of that word
@@ -572,8 +571,9 @@ static inline uint64_t thread_now(void){
 	#define _atomic_futex32(addr, val) \
 		syscall(SYS_ulock_wait, 0x1000001, addr, (uint32_t)(val), 0)
 
+	// ulock_wake wakes exactly one waiter unless ULF_WAKE_ALL (0x100) is set: its last argument is a thread to wake (with ULF_WAKE_THREAD), not a count. So anything but n == 1 wakes everyone, which callers allow (waking more than requested is fine, waking fewer loses wakeups)
 	#define _atomic_futex_wake32(addr, n) \
-		syscall(SYS_ulock_wake, 0x1000001, addr, n)
+		syscall(SYS_ulock_wake, 0x1000001 | (((n) > 1) << 8), addr, 0)
 
 	#if (defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 101500) || \
 	    (defined(__IPHONE_OS_VERSION_MIN_REQUIRED) && __IPHONE_OS_VERSION_MIN_REQUIRED >= 130000) || \
@@ -585,7 +585,7 @@ static inline uint64_t thread_now(void){
 			c syscall(SYS_ulock_wait, 0x1000005, addr, (uint64_t)(val), 0)
 
 		#define _atomic_futex_wake64(addr, n) \
-			syscall(SYS_ulock_wake, 0x1000005, addr, n)
+			syscall(SYS_ulock_wake, 0x1000005 | (((n) > 1) << 8), addr, 0)
 		
 	#endif
 
@@ -835,7 +835,7 @@ static inline void lock_wait_acquire_explicit(lock_t* lock, int32_t wait_n, int3
 		_atomic_wait32(lock, v);
 		v = atomic_load_explicit(lock, memory_order_relaxed);
 		if((v&0x7fffffff) >= (uint32_t)wait_n) goto try_acq;
-		_atomic_wake32(lock, 1);
+		_atomic_wake32(lock, (int)wait_n+(wait_n<0x7fffffff));
 	}else{
 		try_acq: if(atomic_compare_exchange_weak_explicit(lock, &v, v-(uint32_t)n /* keeps wait flag */, order, memory_order_relaxed))
 			return; // acquired
@@ -857,7 +857,7 @@ static inline void lock_wait_explicit(lock_t* lock, int32_t n, memory_order orde
 		if(!(v&0x80000000)) atomic_fetch_or_explicit(lock, 0x80000000, memory_order_relaxed), v |= 0x80000000;
 		_atomic_wait32(lock, v);
 		if(n <= (int32_t)((v = atomic_load_explicit(lock, order))&0x7fffffff)) return;
-		_atomic_wake32(lock, 1);
+		_atomic_wake32(lock, (int)n+(n<0x7fffffff));
 	}
 }
 // Wait for `n` slots to become available on a `lock_t`. If those slots are not available, the function will wait until corresponding `lock_release` has released them. Nothing is acquired. Once those slots are available, they will stay available for other operations to potentially acquire. This function implies acquire memory ordering (see `lock_wait_explicit`)

@@ -1,6 +1,4 @@
-.vscode
-.vs
-.DS_Store
+.*
 Thumbs.db
 
 *.dSYM
